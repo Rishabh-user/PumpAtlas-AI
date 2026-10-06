@@ -1,0 +1,14 @@
+Alembic migrations for PumpAtlas AI.
+
+The initial schema is applied from db/schema.sql (generated from the models by
+scripts/gen_schema.py), together with db/extensions.sql, db/functions.sql and
+db/rls.sql. Alembic then owns every change after that point.
+
+    # after changing a model
+    python scripts/gen_schema.py                     # refresh db/schema.sql
+    alembic revision --autogenerate -m "add field X" # generate the migration
+    alembic upgrade head                             # apply it
+
+Autogenerate does not manage RLS policies, triggers or the text search configuration.
+Those live in db/*.sql; if a change touches them, add the statement to the migration by
+hand with op.execute().

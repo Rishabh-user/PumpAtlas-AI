@@ -1,0 +1,67 @@
+# Infrastructure only - PostgreSQL, Redis and MinIO.
+#
+# For local development you generally want the *app* running natively (hot reload,
+# breakpoints, fast restarts) and only the stateful services in containers. Redis in
+# particular has no native Windows build, so this is the practical path on Windows.
+#
+#   docker compose -f infra/docker-compose.deps.yml up -d
+#   docker compose -f infra/docker-compose.deps.yml down          # keeps data
+#   docker compose -f infra/docker-compose.deps.yml down -v       # wipes data
+#
+# Then run the API, worker and frontend from the host - see docs/LOCAL_SETUP.md.
+
+name: pumpatlas-deps
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pumpatlas
+      POSTGRES_USER: pumpatlas
+      POSTGRES_PASSWORD: pumpatlas
+      POSTGRES_INITDB_ARGS: "--data-checksums --locale=C --encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Applied in filename order on FIRST start only (empty data volume).
+      - ../db/extensions.sql:/docker-entrypoint-initdb.d/01_extensions.sql:ro
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+      - ../db/functions.sql:/docker-entrypoint-initdb.d/03_functions.sql:ro
+      - ../db/rls.sql:/docker-entrypoint-initdb.d/04_rls.sql:ro
+      - ../db/app_role.sql:/docker-entrypoint-initdb.d/05_app_role.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pumpatlas -d pumpatlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

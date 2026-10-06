@@ -1,0 +1,206 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * PumpAtlas AI — design tokens.
+ *
+ * Direction: dark data terminal. The product's job is 400-column specification tables
+ * read for long stretches, so the surface recedes to near-black, figures are monospace
+ * and right-aligned, and colour is spent only on meaning — never decoration.
+ *
+ * Naming follows shadcn/ui so every component copied from it works unmodified. Values
+ * are bare HSL channels, which is what lets Tailwind inject an alpha:
+ * `bg-primary/20` compiles to `hsl(var(--primary) / 0.2)`. Written as hex the opacity
+ * modifier is silently dropped and the colour resolves to transparent.
+ */
+
+@layer base {
+  :root {
+    /* ---- light: for printing into procurement packs ------------------- */
+    --background: 210 20% 98%;
+    --foreground: 215 28% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 28% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 28% 12%;
+
+    /* Electric cyan. On light it needs darkening to stay legible on white. */
+    --primary: 187 85% 28%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 214 20% 93%;
+    --secondary-foreground: 215 25% 20%;
+
+    --muted: 214 20% 94%;
+    --muted-foreground: 215 14% 42%;
+
+    --accent: 214 22% 91%;
+    --accent-foreground: 215 25% 20%;
+
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 86%;
+    --ring: 187 85% 34%;
+
+    /* ---- data confidence --------------------------------------------
+     * Semantic, not decorative. An engineer reads these to decide how much
+     * weight to give a number, so each stays distinguishable from the others
+     * and always carries a non-colour cue alongside.
+     */
+    --conf-verified: 152 62% 32%;
+    --conf-declared: 217 78% 44%;
+    --conf-thirdparty: 193 72% 32%;
+    --conf-ai: 28 88% 38%;
+    --conf-estimated: 262 60% 50%;
+    --conf-unknown: 215 14% 42%;
+
+    /* ---- severity ---------------------------------------------------- */
+    --sev-info: 215 14% 42%;
+    --sev-low: 217 78% 44%;
+    --sev-medium: 28 88% 38%;
+    --sev-high: 14 84% 40%;
+    --sev-critical: 0 72% 42%;
+
+    /* ---- score grades ------------------------------------------------ */
+    --grade-a: 152 62% 32%;
+    --grade-b: 96 48% 32%;
+    --grade-c: 28 88% 38%;
+    --grade-d: 14 84% 40%;
+    --grade-e: 0 72% 42%;
+
+    /* ---- geometry ----------------------------------------------------
+     * Tight. Rounded corners on a dense grid read as noise.
+     */
+    --radius: 0.25rem;
+
+    /* Layout constants the shell depends on, stated once. */
+    --rail-width: 3.25rem;
+    --topbar-height: 3rem;
+    --content-max: 110rem;
+  }
+
+  .dark {
+    /* ---- dark: the default working theme ----------------------------- */
+    --background: 220 26% 7%;
+    --foreground: 210 20% 92%;
+
+    --card: 220 24% 9%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 220 24% 10%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 186 92% 56%;
+    --primary-foreground: 220 30% 6%;
+
+    --secondary: 220 18% 15%;
+    --secondary-foreground: 210 18% 88%;
+
+    --muted: 220 18% 14%;
+    --muted-foreground: 214 14% 60%;
+
+    --accent: 220 18% 17%;
+    --accent-foreground: 210 18% 90%;
+
+    --destructive: 0 76% 60%;
+    --destructive-foreground: 220 30% 6%;
+
+    --border: 220 16% 18%;
+    --input: 220 16% 22%;
+    --ring: 186 92% 56%;
+
+    /* Lifted well above the mid-point: these must read as signal against
+     * near-black, which the light-mode values are far too dark to do. */
+    --conf-verified: 152 62% 52%;
+    --conf-declared: 214 92% 68%;
+    --conf-thirdparty: 190 82% 56%;
+    --conf-ai: 33 92% 60%;
+    --conf-estimated: 265 88% 74%;
+    --conf-unknown: 214 14% 60%;
+
+    --sev-info: 214 14% 60%;
+    --sev-low: 214 92% 68%;
+    --sev-medium: 33 92% 60%;
+    --sev-high: 18 92% 62%;
+    --sev-critical: 0 84% 66%;
+
+    --grade-a: 152 62% 52%;
+    --grade-b: 96 52% 52%;
+    --grade-c: 33 92% 60%;
+    --grade-d: 18 92% 62%;
+    --grade-e: 0 84% 66%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings:
+      "cv02" 1,
+      "cv03" 1,
+      "cv04" 1;
+  }
+
+  /* Figures must line up down a column to be comparable at a glance. */
+  th,
+  td {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* One visible focus treatment everywhere, keyboard-only. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring/60 ring-offset-1 ring-offset-background;
+  }
+
+  ::selection {
+    @apply bg-primary/25;
+  }
+
+  /* A dense app scrolls constantly; the default bar is too loud for that. */
+  ::-webkit-scrollbar {
+    height: 0.625rem;
+    width: 0.625rem;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full border-2 border-transparent bg-muted-foreground/25 bg-clip-content;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+}
+
+@layer components {
+  /*
+   * The only two component classes in this file.
+   *
+   * Everything else is a real component in `components/ui` — a class in a stylesheet
+   * cannot carry a variant, a disabled state or a ref, which is the whole reason for
+   * moving to shadcn. These two survive because they are pure typography, applied to
+   * dozens of one-off elements where a wrapper component would be noise.
+   */
+
+  /* Micro-label: column heads, stat captions, section rules. */
+  .label-xs {
+    @apply text-[0.6875rem] font-medium uppercase tracking-[0.08em] text-muted-foreground;
+  }
+
+  /* Any figure a reader might compare against the one above it. */
+  .figure {
+    @apply font-mono text-[0.8125rem] tabular-nums;
+  }
+}

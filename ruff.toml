@@ -1,0 +1,13 @@
+# Root lint config, so `scripts/` is held to the same standard as `backend/`.
+# The backend has its own pyproject.toml; this file governs everything outside it.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "C4"]
+
+[lint.per-file-ignores]
+# The generators must extend sys.path before importing the app, so imports cannot all
+# sit at the top of the file.
+"scripts/gen_schema.py" = ["E402"]
+"scripts/gen_data_dictionary.py" = ["E402"]

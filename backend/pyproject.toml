@@ -1,0 +1,26 @@
+[project]
+name = "pumpatlas-backend"
+version = "0.1.0"
+description = "PumpAtlas AI - Oil & Gas Pump Intelligence Platform (API)"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4"]
+ignore = [
+    "B008",   # FastAPI Depends() in argument defaults is the documented pattern
+    "UP038",  # isinstance(x, A | B) is slower at runtime than the tuple form,
+              # and newer ruff deprecates this rule for that reason
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Prompt text is the product. Re-wrapping a line to satisfy the column limit changes
+# what the model is asked to do, so E501 is off in this file only.
+"app/ai/prompts.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

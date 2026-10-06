@@ -1,0 +1,25 @@
+*.egg-info/
+*.log
+*.py[cod]
+*.tmp
+.DS_Store
+.app_db_password*
+.data/
+.env
+.env.local
+# Timestamped copies made before editing .env. They hold the same secrets.
+.env.backup-*
+.mypy_cache/
+.next/
+.next-build/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+build/
+coverage/
+dist/
+node_modules/
+out/
+uploads/
+venv/

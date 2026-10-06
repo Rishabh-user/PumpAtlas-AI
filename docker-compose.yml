@@ -1,0 +1,156 @@
+# PumpAtlas AI - local and MVP deployment stack.
+#
+#   docker compose up --build
+#
+# Frontend  http://localhost:3000
+# API docs  http://localhost:8000/docs
+# MinIO     http://localhost:9001  (minioadmin / minioadmin)
+
+name: pumpatlas
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pumpatlas}
+      POSTGRES_USER: ${POSTGRES_USER:-pumpatlas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pumpatlas}
+      # Deterministic collation keeps index behaviour identical across machines.
+      POSTGRES_INITDB_ARGS: "--data-checksums --locale=C --encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Applied in filename order on first start: extensions, schema, functions, RLS.
+      - ./db/extensions.sql:/docker-entrypoint-initdb.d/01_extensions.sql:ro
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+      - ./db/functions.sql:/docker-entrypoint-initdb.d/03_functions.sql:ro
+      - ./db/rls.sql:/docker-entrypoint-initdb.d/04_rls.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pumpatlas} -d ${POSTGRES_DB:-pumpatlas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_started }
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # One-shot: seeds roles, the demo tenant and the bootstrap administrator.
+  seed:
+    build:
+      context: ./backend
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["python", "-m", "scripts.seed"]
+    restart: "no"
+
+  worker:
+    build:
+      context: ./backend
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # Ingestion is IO bound and AI calls are slow, so the queues get separate slots.
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=default,ingest,ai,index
+      - --concurrency=4
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: ./backend
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis: { condition: service_healthy }
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - beat
+      - --loglevel=info
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      # Server-side address of the API; the browser only ever calls /api/proxy.
+      API_INTERNAL_URL: http://api:8000
+      NODE_ENV: production
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
