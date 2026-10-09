@@ -20,8 +20,16 @@ ENV NODE_ENV=production \
 
 RUN addgroup -g 10001 nodejs && adduser -u 10001 -G nodejs -S nextjs
 
+# `next.config.mjs` sets `distDir` to `.next-build` when NODE_ENV is production, so the
+# build output is NOT in `.next` - this copied the development directory instead, and
+# `next start` then looked for a production build that was not in the image.
+#
+# The config has to travel with it. Without it `next start` falls back to the default
+# `.next` and reports no production build found, which reads like a failed build rather
+# than a missing file.
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/.next-build ./.next-build
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 
