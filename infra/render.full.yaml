@@ -1,0 +1,195 @@
+# Render blueprint for PumpAtlas AI - the FULL deployment.
+#
+# Six services: the API, the dashboard, three Celery workers and the Redis they need.
+# Use this once discovery runs matter enough to survive an API restart.
+#
+# The repository root carries the two-service version instead - API and dashboard only -
+# because that is what a first deployment needs and it costs a third as much. To use this
+# one, copy it over `render.yaml` and re-sync the blueprint.
+#
+# ---------------------------------------------------------------------------------
+# Render blueprint for PumpAtlas AI.
+#
+# The database already exists, so it is NOT declared here - that avoids any chance of a
+# blueprint sync trying to recreate or replace it. Supply its connection string as the
+# DATABASE_URL secret below.
+#
+# Deploy the app in the SAME REGION as the database. PumpAtlas issues several queries per
+# request; at a cross-continent round trip of ~250 ms a page costs seconds, while
+# co-located it costs milliseconds. This is the single biggest performance decision here.
+
+services:
+  # ---------------------------------------------------------------- API
+  - type: web
+    name: pumpatlas-api
+    runtime: docker
+    region: oregon                 # must match the database's region
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Render injects PORT; the Dockerfile's default of 8000 is for local use.
+    dockerCommand: >-
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+      --forwarded-allow-ips '*'
+    healthCheckPath: /api/v1/health
+    autoDeploy: false
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # Paste the Internal Database URL from the Render dashboard, with the
+      # pumpatlas_app credentials rather than the owner's. Internal URLs need no TLS
+      # flag, but sslmode=require is harmless and correct if you use the external one.
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pumpatlas-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: pumpatlas-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: pumpatlas-redis
+          property: connectionString
+      - key: CORS_ORIGINS
+        fromService:
+          type: web
+          name: pumpatlas-web
+          property: host
+      # Optional. Without them the platform runs without its assistant layer.
+      # AI provider keys are not deployment configuration: they live encrypted in
+      # `ai_provider_configs` and are set on the /ai-settings page, which also decides
+      # which provider is active. These two remain only as a fallback for a brand new
+      # deployment that has not visited that page - leave them unset and configure it
+      # in the app instead.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: PARALLEL_API_KEY
+        sync: false
+      # S3-compatible object storage for documents. Leave unset to fall back to local
+      # disk, which on Render is ephemeral - set these before storing anything real.
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+
+  # ------------------------------------------------------------- Workers
+  # Split by queue: a 90-second Gemma call must not hold a slot that a 200 ms reindex
+  # is waiting for.
+  - type: worker
+    name: pumpatlas-worker-ingest
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: >-
+      celery -A app.workers.celery_app.celery_app worker --loglevel=info
+      --queues=ingest,index,default --concurrency=4
+    autoDeploy: false
+    envVars:
+      - fromGroup: pumpatlas-shared
+
+  - type: worker
+    name: pumpatlas-worker-ai
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: >-
+      celery -A app.workers.celery_app.celery_app worker --loglevel=info
+      --queues=ai --concurrency=2
+    autoDeploy: false
+    envVars:
+      - fromGroup: pumpatlas-shared
+
+  # Exactly one beat process. Two schedulers fire every crawl twice.
+  - type: worker
+    name: pumpatlas-beat
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A app.workers.celery_app.celery_app beat --loglevel=info
+    autoDeploy: false
+    envVars:
+      - fromGroup: pumpatlas-shared
+
+  # ----------------------------------------------------------- Dashboard
+  - type: web
+    name: pumpatlas-web
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Server-side address of the API. The browser never calls it directly.
+      - key: API_INTERNAL_URL
+        fromService:
+          type: web
+          name: pumpatlas-api
+          property: hostport
+
+  # --------------------------------------------------------------- Redis
+  - type: keyvalue
+    name: pumpatlas-redis
+    region: oregon
+    plan: starter
+    # Celery needs its queued tasks to survive memory pressure, not be evicted.
+    maxmemoryPolicy: noeviction
+    ipAllowList: []          # private network only
+
+# Shared by the three worker services. Fill these in once, in the Render dashboard.
+envVarGroups:
+  - name: pumpatlas-shared
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
+      # AI provider keys are not deployment configuration: they live encrypted in
+      # `ai_provider_configs` and are set on the /ai-settings page, which also decides
+      # which provider is active. These two remain only as a fallback for a brand new
+      # deployment that has not visited that page - leave them unset and configure it
+      # in the app instead.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: PARALLEL_API_KEY
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false

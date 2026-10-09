@@ -15,9 +15,18 @@ email-validator==2.3.0
 # reads bcrypt.__about__ which bcrypt 4.x removed).
 bcrypt==4.2.1
 PyJWT==2.13.0
+# Fernet, which encrypts the AI provider keys held in `ai_provider_configs`. Imported
+# directly by `app/services/ai_settings.py` and pulled in by nothing else - it was
+# installed by hand in the development environment and missing here, so the first deploy
+# died on `ModuleNotFoundError: No module named 'cryptography'` at import time.
+cryptography==43.0.3
 # --- jobs ---
 celery==5.6.3
 redis==8.1.0
+# Imported directly by `app/main.py` for `kombu.exceptions.OperationalError`, which is
+# how a missing broker is recognised. It arrives with celery, but a package you import is
+# a package you depend on - pin it with celery, and move both together.
+kombu==5.6.2
 # --- ai / http ---
 httpx==0.28.1
 tenacity==9.1.4
@@ -30,6 +39,10 @@ lxml==5.3.0
 chardet==5.2.0
 # --- storage ---
 boto3==1.35.90
+# Same reasoning as kombu: `app/services/storage.py` imports
+# `botocore.exceptions.ClientError` directly. boto3 constrains it to its own minor, so
+# these two move together.
+botocore==1.35.99
 # --- observability ---
 structlog==26.1.0
 prometheus_client==0.26.0

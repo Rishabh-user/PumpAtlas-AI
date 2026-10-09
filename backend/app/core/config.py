@@ -179,7 +179,19 @@ class Settings(BaseSettings):
         raw = self.CORS_ORIGINS.strip()
         if raw == "*":
             return ["*"]
-        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+        origins = []
+        for entry in raw.split(","):
+            origin = entry.strip().rstrip("/")
+            if not origin:
+                continue
+            # An origin is a scheme and a host. Render's blueprint supplies a service's
+            # `host` property, which is the bare hostname - and a browser sends
+            # `Origin: https://that-host`, which matches no bare hostname, so every
+            # cross-origin call is refused with nothing in the logs that names the cause.
+            if "://" not in origin:
+                origin = f"https://{origin}"
+            origins.append(origin)
+        return origins
 
     @property
     def sqlalchemy_url(self) -> str:

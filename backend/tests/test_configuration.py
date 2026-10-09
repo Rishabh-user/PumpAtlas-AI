@@ -158,3 +158,44 @@ class TestReadinessReportsTheRealConfiguration:
         source = inspect.getsource(system.ready)
         assert "settings.use_s3" in source
         assert "LOCAL_STORAGE_DIR" in source
+
+
+class TestTheDeployedOriginsAreRealOrigins:
+    """Render's blueprint supplies a service's `host` property, which is a bare hostname.
+
+    A browser sends `Origin: https://that-host`. Starlette compares the two as strings,
+    so a bare hostname matches nothing and every cross-origin call is refused - with
+    nothing in the logs naming the cause.
+    """
+
+    def test_a_bare_hostname_becomes_an_origin(self):
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="pumpatlas-web.onrender.com").cors_origins == [
+            "https://pumpatlas-web.onrender.com"
+        ]
+
+    def test_an_origin_that_is_already_one_is_untouched(self):
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="http://localhost:3000").cors_origins == [
+            "http://localhost:3000"
+        ]
+
+    def test_a_trailing_slash_is_not_part_of_an_origin(self):
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="https://a.example/").cors_origins == ["https://a.example"]
+
+    def test_the_wildcard_still_means_everything(self):
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="*").cors_origins == ["*"]
+
+    def test_several_origins_are_each_normalised(self):
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="a.example, https://b.example , ").cors_origins == [
+            "https://a.example",
+            "https://b.example",
+        ]

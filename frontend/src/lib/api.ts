@@ -19,7 +19,27 @@ import {
 export { ACCESS_TOKEN_COOKIE, ApiError, TENANT_COOKIE } from "@/lib/api-shared";
 export type { RequestOptions } from "@/lib/api-shared";
 
-const INTERNAL_BASE = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
+/**
+ * Where this server reaches the API.
+ *
+ * Render's blueprint supplies it from the API service's `hostport` property, which is
+ * `pumpatlas-api:10000` — a host and a port, with no scheme, because that is what
+ * private networking addresses look like there. `fetch()` rejects that, so every
+ * server-rendered page would fail on the first deploy with nothing in the UI to say
+ * why. A blueprint cannot concatenate strings, so the scheme is added here.
+ *
+ * Private traffic inside Render is plain HTTP; an address that already carries a scheme
+ * is left exactly as given, so an external or TLS endpoint still works.
+ */
+function internalBase(): string {
+  const configured = (process.env.API_INTERNAL_URL ?? "http://localhost:8000").trim();
+  const withScheme = /^https?:\/\//i.test(configured)
+    ? configured
+    : `http://${configured}`;
+  return withScheme.replace(/\/+$/, "");
+}
+
+const INTERNAL_BASE = internalBase();
 const API_PREFIX = "/api/v1";
 
 export async function apiFetch<T>(

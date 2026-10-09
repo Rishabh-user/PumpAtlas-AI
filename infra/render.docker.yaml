@@ -1,15 +1,14 @@
+# The same two services, built from the Dockerfiles instead of Render's native
+# runtimes. Use this when you want the deployed image to be byte-for-byte what you
+# run locally with docker compose, or when you move off Render and want the build to
+# come with you. To use it, copy it over `render.yaml` and re-sync the blueprint.
+#
+# ---------------------------------------------------------------------------------
 # Render blueprint for PumpAtlas AI.
 #
-# Two services from one repository, built with Render's native Python and Node runtimes.
-# No Dockerfile is involved: `rootDir` points each service at its own folder and Render
-# builds only that one.
-#
-# Docker is not needed here. Every Python dependency ships a prebuilt Linux wheel -
-# psycopg, lxml, bcrypt and cryptography included - so nothing compiles, and the frontend
-# is a stock Next.js build. The Dockerfiles stay in the repository for local
-# `docker compose` and for the day this moves to another host; `infra/render.docker.yaml`
-# is the same two services built from them, if you would rather deploy the identical
-# image you run locally.
+# Two services from one repository: the API from `backend/`, the dashboard from
+# `frontend/`. A monorepo needs nothing special here - each service names its own
+# Dockerfile and its own build context, and Render builds only that folder.
 #
 # The DATABASE IS NOT DECLARED. It already exists on Render, and a blueprint sync that
 # tried to recreate it would be the worst outcome available. Paste its connection string
@@ -19,29 +18,27 @@
 # request; at a cross-continent round trip of ~250 ms a page costs seconds, while
 # co-located it costs milliseconds. This is the single biggest performance decision here.
 #
-# No Redis and no Celery workers. Without a broker, `dispatch` probes, fails over, and
-# runs discovery inside the API process - the same behaviour as development. Everything
-# works; a long sweep dies if the API restarts or scales. When that starts to matter,
-# copy `infra/render.full.yaml` over this file: it adds Redis and three workers.
+# No Redis and no Celery workers. Without a broker, `dispatch` falls back to running
+# discovery inside the API process - the same behaviour as development. Everything works;
+# a long sweep dies if the API restarts or scales. When that starts to matter, copy
+# `infra/render.full.yaml` over this file: it adds Redis and three workers.
 
 services:
   # ---------------------------------------------------------------- API
   - type: web
     name: pumpatlas-api
-    runtime: python
+    runtime: docker
     region: oregon                 # must match the database's region
     plan: starter
-    rootDir: backend               # the monorepo's backend folder, nothing else
-    buildCommand: pip install -r requirements.txt
-    startCommand: >-
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Render injects PORT; the Dockerfile's default of 8000 is for local use.
+    dockerCommand: >-
       uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers
       --forwarded-allow-ips '*'
     healthCheckPath: /api/v1/health
     autoDeploy: false
     envVars:
-      # `datetime.UTC`, `X | Y` unions and `StrEnum` need 3.11+; built and tested on 3.12.
-      - key: PYTHON_VERSION
-        value: "3.12.7"
       - key: ENVIRONMENT
         value: production
       - key: LOG_LEVEL
@@ -67,12 +64,17 @@ services:
 
       # Only for *other* applications calling this API directly from a browser. The
       # dashboard does not need it: its browser code goes through `/api/proxy` on its own
-      # origin, so no cross-origin request is ever made.
+      # origin, so no cross-origin request is ever made. Set it to the other
+      # application's origin, e.g. https://portal.example.com.
+      #
+      # Left as a secret rather than wired to the dashboard's host on purpose - two
+      # services referencing each other's properties is a circular blueprint reference,
+      # and this one buys nothing.
       - key: CORS_ORIGINS
         sync: false
 
       # Object storage for uploaded documents. Leave unset and uploads go to the
-      # instance's own disk, which Render replaces on every deploy - set these before
+      # container's own disk, which Render replaces on every deploy - set these before
       # storing anything that matters.
       - key: S3_ENDPOINT_URL
         sync: false
@@ -95,18 +97,13 @@ services:
   # ----------------------------------------------------------- Dashboard
   - type: web
     name: pumpatlas-web
-    runtime: node
+    runtime: docker
     region: oregon                 # same region as the API and the database
     plan: starter
-    rootDir: frontend
-    # `npm ci` installs exactly what package-lock.json pins, which is what makes a
-    # deployed build reproducible rather than merely recent.
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
     autoDeploy: false
     envVars:
-      - key: NODE_VERSION
-        value: "22"
       - key: NODE_ENV
         value: production
 
