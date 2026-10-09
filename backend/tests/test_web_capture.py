@@ -326,23 +326,38 @@ class TestTheListShowsOneCatalogueAtATime:
 
     A platform administrator sees every tenancy, so an unscoped vendor list interleaved
     the shared-master catalogue with each client's own and the eight companies held in
-    both appeared twice. Labelling them "also in 1 other tenancy" explained it and did
-    not fix it: the reader still had one list with the same company twice in it.
+    both appeared twice. Scoping the list fixed that, and a platform administrator was
+    defaulted to shared master - the catalogue they curate, and the one with no overlaps.
+
+    That default has since been **reversed by the data**. It was chosen while shared
+    master was 47 of 77 records. A client's approved vendor lists were then imported and
+    the balance inverted: 1,601 of 1,684 records belong to a tenant and 52 are shared, so
+    the default hid 95% of the catalogue behind a dropdown and the list read as empty to
+    the person who had just loaded that data.
+
+    The scope control is what the original fix was really for, and it stays. The
+    duplicate the wider default reintroduces is explained rather than hidden: each row
+    carries `also_in_other_tenancies`, and `merge_vendors` still refuses to cross a
+    tenancy boundary.
     """
 
     def test_the_list_takes_a_catalogue_scope(self):
         source = inspect.getsource(vendor_routes.list_vendors)
         assert "tenant_scope" in source
 
-    def test_an_administrator_defaults_to_shared_master(self):
-        """The catalogue they curate, and the one with no overlaps in it."""
+    def test_the_default_is_every_catalogue_the_caller_may_see(self):
+        """Hiding 95% of the records by default is worse than showing a duplicate."""
         source = inspect.getsource(vendor_routes.list_vendors)
-        assert 'if principal.is_platform_admin else "all"' in source
+        assert 'scope = tenant_scope or "all"' in source
 
-    def test_a_tenant_user_is_unaffected(self):
-        """Row level security already limits them to their own plus shared master."""
+    def test_no_caller_is_narrowed_by_their_role(self):
+        """Row level security already limits a tenant user to their own plus shared."""
         source = inspect.getsource(vendor_routes.list_vendors)
-        assert '"shared" if principal.is_platform_admin' in source
+        assert 'if principal.is_platform_admin else "all"' not in source
+
+    def test_the_duplicate_it_allows_is_still_explained(self):
+        source = inspect.getsource(vendor_routes.list_vendors)
+        assert "also_in_other_tenancies" in source
 
     def test_shared_master_means_a_null_tenant(self):
         source = inspect.getsource(vendor_routes.list_vendors)

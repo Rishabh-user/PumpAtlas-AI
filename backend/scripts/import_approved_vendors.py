@@ -68,6 +68,7 @@ from app.models.pump import Pump, PumpModel  # noqa: E402
 from app.models.source import ImportBatch, Source  # noqa: E402
 from app.models.tenant import Tenant  # noqa: E402
 from app.models.vendor import Vendor  # noqa: E402
+from app.services import client_records  # noqa: E402
 from app.services.indexing import reindex_pump_model  # noqa: E402
 
 TENANT_SLUG = "sp-energy"
@@ -639,6 +640,32 @@ def load(db: Session, rows: list[Row], commit: bool) -> dict[str, int]:
 
     print(f"   vendor pass done, flushing at {_t.strftime('%H:%M:%S')}", flush=True)
     db.flush()
+
+    # The same facts, in the tables that hold them: `vendor_approvals`,
+    # `vendor_identifiers`, `vendor_contacts` and the identity columns. Everything
+    # written there is read back out of `extra`, which this pass leaves intact - the
+    # verbatim source rows are the evidence behind each structured value.
+    #
+    # Skipped with a logged hint where migrations 002 and 003 have not been applied, so
+    # an import against an older database still succeeds and keeps the detail in `extra`
+    # exactly as it did before. `scripts.structure_client_data` finishes the job later.
+    touched = list(mine.values())
+    if touched and client_records.structure_available(db):
+        held = client_records.load_held(db, [vendor.id for vendor in touched])
+        for vendor in touched:
+            structured = client_records.sync_vendor(db, vendor, held=held)
+            for key, value in structured.items():
+                counts[f"structured_{key}"] = counts.get(f"structured_{key}", 0) + value
+        db.flush()
+        print(
+            "   structured: "
+            + ", ".join(
+                f"{counts.get(f'structured_{k}', 0)} {k}"
+                for k in ("approvals", "identifiers", "contacts", "fields")
+            ),
+            flush=True,
+        )
+
     print(f"   flushed; {len(pump_jobs)} pump jobs at {_t.strftime('%H:%M:%S')}", flush=True)
     for vendor, row, source in pump_jobs:
         counts.update(_ensure_pump(db, tenant, vendor, row, source, caches, counts))

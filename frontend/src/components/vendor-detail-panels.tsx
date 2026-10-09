@@ -45,6 +45,8 @@ export function VendorDetailPanels({
   const discovery = ((vendor.extra as Record<string, unknown> | null)
     ?.discovery ?? {}) as Record<string, unknown>;
   const aliases = (vendor.aliases as string[] | null) ?? [];
+  const approvals = profile.approvals ?? [];
+  const identifiers = profile.identifiers ?? [];
 
   // `refused` is written by `store_candidate`: the field, what the page said, and why it
   // was not stored. `refused_at` and `refused_source_id` sit beside it and are not fields.
@@ -73,7 +75,16 @@ export function VendorDetailPanels({
               <FieldRow label="Legal entity">
                 {text(discovery.legal_entity_name as string | null)}
               </FieldRow>
-              <FieldRow label="Logo">
+              {/* Registration identifiers: how a finance team recognises a company
+              * independently of whatever name it trades under. */}
+            {identifiers.length ? (
+              <FieldRow label="Identifiers">
+                {identifiers
+                  .map((entry) => `${entry.scheme.toUpperCase()} ${entry.value}`)
+                  .join(" · ")}
+              </FieldRow>
+            ) : null}
+            <FieldRow label="Logo">
                 {vendor.logo_url ? (
                   <a
                     href={externalHref(String(vendor.logo_url))}
@@ -402,6 +413,44 @@ export function VendorDetailPanels({
               ))}
             </ul>
           </div>
+        </Card>
+      ) : null}
+
+      {/* The facts a client's own documents state. An approved suppliers list is signed
+        * by an engineering authority: it says this company may supply this package on
+        * this project, which is a stronger statement than anything read off the web, and
+        * it is the reason the record is marked verified. */}
+      {approvals.length ? (
+        <Card className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>Approved to supply ({approvals.length})</CardTitle>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Package</TableHead>
+                <TableHead>Project</TableHead>
+                <TableHead>Countries as stated</TableHead>
+                <TableHead>Document</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {approvals.map((approval) => (
+                <TableRow key={`${approval.project}-${approval.package}`}>
+                  <TableCell className="text-xs font-medium text-foreground">
+                    {text(approval.package)}
+                  </TableCell>
+                  <TableCell className="text-xs">{text(approval.project)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {text(approval.approved_country)}
+                  </TableCell>
+                  <TableCell className="truncate font-mono text-[0.625rem] text-muted-foreground">
+                    {text(approval.document_reference)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </Card>
       ) : null}
 

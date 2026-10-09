@@ -86,15 +86,23 @@ export default async function VendorsPage({
 
   const { q, approval_status, tenant_scope, page } = await searchParams;
 
-  // A platform administrator sees every tenancy, so an unscoped list interleaves the
-  // shared-master catalogue with each client's own: 73 rows for 65 companies, with the
-  // eight that exist in both appearing twice. The API defaults an administrator to the
-  // shared-master catalogue; this mirrors that default so the control shows what is
-  // actually being listed.
+  // A platform administrator sees every tenancy, and the default used to narrow that to
+  // the shared-master catalogue: an unscoped list interleaves shared records with each
+  // client's own, and a company held in both appeared twice with no explanation.
+  //
+  // That default was set when shared master was 47 of 77 records. A client's approved
+  // vendor lists have since been imported, and the balance inverted: 1,601 of 1,684
+  // records belong to a tenant and 52 are shared, so defaulting to "shared" hid 95% of
+  // the catalogue behind a dropdown and the page read as empty to the person who had
+  // just loaded that data.
+  //
+  // So the default shows everything, and the duplicate it reintroduces is explained
+  // rather than hidden: each row carries how many other tenancies hold the same
+  // normalised name, which is the badge built for exactly this.
   // `loadShellContext` types `user` as nullable, so the flag is derived once here
   // rather than asserted at each of the four places that need it.
   const isPlatformAdmin = user?.is_platform_admin ?? false;
-  const scope = tenant_scope ?? (isPlatformAdmin ? "shared" : "all");
+  const scope = tenant_scope ?? "all";
 
   // Only a platform administrator can list tenants, and only they need the selector.
   let tenants: Array<{ id: string; name: string; slug: string }> = [];

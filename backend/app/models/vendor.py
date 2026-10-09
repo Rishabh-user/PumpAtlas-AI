@@ -36,6 +36,27 @@ if TYPE_CHECKING:
     from app.models.pump import Pump
 
 
+#: The identity columns migration 003 adds, named where they are declared.
+#:
+#: They are mapped `deferred`, which keeps an ordinary entity load working against a
+#: database the migration has not reached yet. Anything that touches *every* column by
+#: name - a response model built from the table, a full-record serialisation - defeats
+#: that by loading each one, so those callers read this set and leave them out.
+#:
+#: Excluding them from the list response is also right once the migration *is* applied:
+#: a deferred column in a list is one extra query per row.
+MIGRATION_003_COLUMNS = frozenset(
+    {
+        "address_line",
+        "state_region",
+        "legal_entity_name",
+        "client_since",
+        "is_purchasing_blocked",
+        "purchasing_block_note",
+    }
+)
+
+
 class Vendor(UUIDPrimaryKey, Timestamps, SoftDelete, TenantScoped, Base):
     """A pump supplier.
 
@@ -62,6 +83,41 @@ class Vendor(UUIDPrimaryKey, Timestamps, SoftDelete, TenantScoped, Base):
         String(2), index=True, comment="Operating country for this record"
     )
     hq_city: Mapped[str | None] = mapped_column(String(120))
+    # ---------- added by migration 003 ----------
+    #
+    # `deferred` on every one of them, which is what lets this model describe a database
+    # that has the columns and one that has not yet had the migration applied. A deferred
+    # column is left out of the default SELECT, so the ordinary entity load that every
+    # list, search and profile does keeps working either way, and the column is fetched
+    # only when something actually asks for it.
+    #
+    # The alternative was discovered the hard way on `vendor_contacts`: declaring a
+    # column the deployed database lacks makes *every* read of that table fail with
+    # "column does not exist", because an ORM entity load asks for all of them.
+    address_line: Mapped[str | None] = mapped_column(
+        String(500), deferred=True, comment="Street address as the source states it"
+    )
+    state_region: Mapped[str | None] = mapped_column(
+        String(120), deferred=True, comment="State, province or county"
+    )
+    legal_entity_name: Mapped[str | None] = mapped_column(
+        String(255),
+        deferred=True,
+        comment="Registered name where it differs from the trading name",
+    )
+    client_since: Mapped[date | None] = mapped_column(
+        Date,
+        deferred=True,
+        comment="When this client first opened an account with the supplier",
+    )
+    is_purchasing_blocked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        deferred=True,
+        comment="The client has barred purchasing from this supplier",
+    )
+    purchasing_block_note: Mapped[str | None] = mapped_column(Text, deferred=True)
     logo_url: Mapped[str | None] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
     ai_summary: Mapped[str | None] = mapped_column(
@@ -192,3 +248,87 @@ class VendorContact(UUIDPrimaryKey, Timestamps, Base):
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     vendor: Mapped[Vendor] = relationship(back_populates="contacts")
+
+
+class VendorApproval(UUIDPrimaryKey, Timestamps, Base):
+    """One statement from a client document that a vendor may supply one package.
+
+    The central fact in a signed approved suppliers list: *this* engineering authority
+    approved *this* vendor for *this* equipment package on *this* project. It was being
+    flattened into `Vendor.product_families`, which loses the project and the authority,
+    and into `extra["approved_packages"]`, which loses the ability to query it.
+
+    A row per statement makes "who may supply sea water injection pumps on KG-DWN-98/2"
+    a query, and lets one approval lapse on its own date instead of a whole vendor being
+    approved for ever.
+    """
+
+    __tablename__ = "vendor_approvals"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "project", "package", name="uq_vendor_approval"),
+        Index("ix_vendor_approvals_vendor", "vendor_id"),
+        Index("ix_vendor_approvals_project", "tenant_id", "project"),
+        Index("ix_vendor_approvals_package", "package"),
+    )
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False
+    )
+    project: Mapped[str] = mapped_column(String(160), nullable=False)
+    package: Mapped[str] = mapped_column(String(300), nullable=False)
+    approved_country: Mapped[str | None] = mapped_column(
+        String(160),
+        comment="Countries as the document writes them - 'UK / Brazil / India' - kept verbatim",
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    document_reference: Mapped[str | None] = mapped_column(
+        String(300), comment="The document number, so an answer can cite it"
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    approved_on: Mapped[date | None] = mapped_column(Date)
+    expires_on: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<VendorApproval {self.package} on {self.project}>"
+
+
+class VendorIdentifier(UUIDPrimaryKey, Timestamps, Base):
+    """A registration or tax identifier: gst, pan, msme, vat, sap_vendor_no, duns.
+
+    Scheme-keyed rather than a column per tax regime. The client's exports carry Indian
+    GST, PAN and MSME numbers; a Norwegian or Brazilian list carries entirely different
+    ones, and each would otherwise be another migration and another mostly-empty column.
+    `scheme` is text on purpose: a new regime costs a row.
+
+    It is also how a buyer finds a company they have only a tax number for.
+    """
+
+    __tablename__ = "vendor_identifiers"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "scheme", "value", name="uq_vendor_identifier"),
+        Index("ix_vendor_identifiers_vendor", "vendor_id"),
+        Index("ix_vendor_identifiers_lookup", "scheme", "value"),
+    )
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False
+    )
+    scheme: Mapped[str] = mapped_column(String(40), nullable=False)
+    value: Mapped[str] = mapped_column(String(120), nullable=False)
+    issued_country: Mapped[str | None] = mapped_column(String(2))
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:
+        return f"<VendorIdentifier {self.scheme}={self.value}>"

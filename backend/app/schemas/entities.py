@@ -11,11 +11,15 @@ from pydantic.fields import FieldInfo
 
 from app.models.enums import VendorApprovalStatus
 from app.models.pump import Pump, PumpModel
-from app.models.vendor import Vendor, VendorContact
+from app.models.vendor import MIGRATION_003_COLUMNS, Vendor, VendorContact
 from app.schemas.common import ORMModel
 from app.schemas.derive import build_read_model, build_write_model
 
-VendorOut = build_read_model(Vendor, "VendorOut")
+# The migration-003 identity columns are left out on purpose. They are deferred on the
+# model, and a response model built from the table touches every field - which loads each
+# of them, and fails outright on a database that has not had the migration applied. They
+# are served by `GET /vendors/{id}/profile`, which asks the catalogue what exists first.
+VendorOut = build_read_model(Vendor, "VendorOut", exclude=set(MIGRATION_003_COLUMNS))
 
 # Not a column: how many *other* tenancies hold a vendor with this normalised name. The
 # list sets it per page so a platform administrator can tell a genuine duplicate from the

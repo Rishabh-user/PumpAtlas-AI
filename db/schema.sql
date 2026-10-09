@@ -722,6 +722,12 @@ CREATE TABLE vendors (
 	hq_country VARCHAR(2), 
 	country VARCHAR(2), 
 	hq_city VARCHAR(120), 
+	address_line VARCHAR(500), 
+	state_region VARCHAR(120), 
+	legal_entity_name VARCHAR(255), 
+	client_since DATE, 
+	is_purchasing_blocked BOOLEAN NOT NULL, 
+	purchasing_block_note TEXT, 
 	logo_url VARCHAR(500), 
 	description TEXT, 
 	ai_summary TEXT, 
@@ -777,6 +783,11 @@ CREATE TABLE vendors (
 
 COMMENT ON COLUMN vendors.normalized_name IS 'Lowercased, legal-suffix-stripped; dedupe key';
 COMMENT ON COLUMN vendors.country IS 'Operating country for this record';
+COMMENT ON COLUMN vendors.address_line IS 'Street address as the source states it';
+COMMENT ON COLUMN vendors.state_region IS 'State, province or county';
+COMMENT ON COLUMN vendors.legal_entity_name IS 'Registered name where it differs from the trading name';
+COMMENT ON COLUMN vendors.client_since IS 'When this client first opened an account with the supplier';
+COMMENT ON COLUMN vendors.is_purchasing_blocked IS 'The client has barred purchasing from this supplier';
 COMMENT ON COLUMN vendors.ai_summary IS 'Gemma-generated vendor briefing; regenerated on material change';
 COMMENT ON COLUMN vendors.vendor_category IS 'Client-specific category label';
 COMMENT ON COLUMN vendors.merged_into_vendor_id IS 'Set when this record was merged away as a duplicate';
@@ -849,6 +860,31 @@ COMMENT ON COLUMN pumps.pump_type_raw IS 'Original uncontrolled string as captur
 COMMENT ON COLUMN pumps.standard_edition IS 'e.g. API 610 12th Edition / ISO 13709:2009';
 COMMENT ON COLUMN pumps.service_application IS 'e.g. crude export, produced water injection, firewater';
 
+CREATE TABLE vendor_approvals (
+	tenant_id UUID, 
+	vendor_id UUID NOT NULL, 
+	project VARCHAR(160) NOT NULL, 
+	package VARCHAR(300) NOT NULL, 
+	approved_country VARCHAR(160), 
+	status VARCHAR(32) NOT NULL, 
+	document_reference VARCHAR(300), 
+	source_id UUID, 
+	approved_on DATE, 
+	expires_on DATE, 
+	notes TEXT, 
+	id UUID DEFAULT gen_random_uuid() NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_vendor_approvals PRIMARY KEY (id), 
+	CONSTRAINT uq_vendor_approval UNIQUE (vendor_id, project, package), 
+	CONSTRAINT fk_vendor_approvals_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_vendor_approvals_vendor_id FOREIGN KEY(vendor_id) REFERENCES vendors (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_vendor_approvals_source_id FOREIGN KEY(source_id) REFERENCES sources (id) ON DELETE SET NULL
+);
+
+COMMENT ON COLUMN vendor_approvals.approved_country IS 'Countries as the document writes them - ''UK / Brazil / India'' - kept verbatim';
+COMMENT ON COLUMN vendor_approvals.document_reference IS 'The document number, so an answer can cite it';
+
 CREATE TABLE vendor_contacts (
 	vendor_id UUID NOT NULL, 
 	tenant_id UUID, 
@@ -856,6 +892,9 @@ CREATE TABLE vendor_contacts (
 	full_name VARCHAR(255), 
 	company_name VARCHAR(255), 
 	email VARCHAR(320), 
+	source_id UUID, 
+	captured_at TIMESTAMP WITH TIME ZONE, 
+	origin VARCHAR(24), 
 	phone VARCHAR(64), 
 	country VARCHAR(2), 
 	territory VARCHAR(255), 
@@ -866,11 +905,32 @@ CREATE TABLE vendor_contacts (
 	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	CONSTRAINT pk_vendor_contacts PRIMARY KEY (id), 
 	CONSTRAINT fk_vendor_contacts_vendor_id FOREIGN KEY(vendor_id) REFERENCES vendors (id) ON DELETE CASCADE, 
-	CONSTRAINT fk_vendor_contacts_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE
+	CONSTRAINT fk_vendor_contacts_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_vendor_contacts_source_id FOREIGN KEY(source_id) REFERENCES sources (id) ON DELETE SET NULL
 );
 
 COMMENT ON COLUMN vendor_contacts.contact_role IS 'commercial | technical | agent | service | authorized_representative';
 COMMENT ON COLUMN vendor_contacts.company_name IS 'Set when the contact is an agent/representative entity';
+COMMENT ON COLUMN vendor_contacts.source_id IS 'The captured page this detail was read from; null when entered by hand';
+COMMENT ON COLUMN vendor_contacts.origin IS 'manual | ai_extraction, mirroring field_provenance';
+
+CREATE TABLE vendor_identifiers (
+	tenant_id UUID, 
+	vendor_id UUID NOT NULL, 
+	scheme VARCHAR(40) NOT NULL, 
+	value VARCHAR(120) NOT NULL, 
+	issued_country VARCHAR(2), 
+	source_id UUID, 
+	captured_at TIMESTAMP WITH TIME ZONE, 
+	id UUID DEFAULT gen_random_uuid() NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	CONSTRAINT pk_vendor_identifiers PRIMARY KEY (id), 
+	CONSTRAINT uq_vendor_identifier UNIQUE (vendor_id, scheme, value), 
+	CONSTRAINT fk_vendor_identifiers_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_vendor_identifiers_vendor_id FOREIGN KEY(vendor_id) REFERENCES vendors (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_vendor_identifiers_source_id FOREIGN KEY(source_id) REFERENCES sources (id) ON DELETE SET NULL
+);
 
 CREATE TABLE pump_models (
 	pump_id UUID NOT NULL, 
@@ -2005,8 +2065,15 @@ CREATE INDEX ix_pumps_tenant_id ON pumps (tenant_id);
 CREATE INDEX ix_pumps_tenant_vendor ON pumps (tenant_id, vendor_id);
 CREATE INDEX ix_pumps_type_standard ON pumps (pump_type, applicable_standard);
 CREATE INDEX ix_pumps_vendor_id ON pumps (vendor_id);
+CREATE INDEX ix_vendor_approvals_package ON vendor_approvals (package);
+CREATE INDEX ix_vendor_approvals_project ON vendor_approvals (tenant_id, project);
+CREATE INDEX ix_vendor_approvals_tenant_id ON vendor_approvals (tenant_id);
+CREATE INDEX ix_vendor_approvals_vendor ON vendor_approvals (vendor_id);
 CREATE INDEX ix_vendor_contacts_tenant_id ON vendor_contacts (tenant_id);
 CREATE INDEX ix_vendor_contacts_vendor_role ON vendor_contacts (vendor_id, contact_role);
+CREATE INDEX ix_vendor_identifiers_lookup ON vendor_identifiers (scheme, value);
+CREATE INDEX ix_vendor_identifiers_tenant_id ON vendor_identifiers (tenant_id);
+CREATE INDEX ix_vendor_identifiers_vendor ON vendor_identifiers (vendor_id);
 CREATE INDEX ix_pump_models_code ON pump_models (model_code);
 CREATE INDEX ix_pump_models_pump_id ON pump_models (pump_id);
 CREATE INDEX ix_pump_models_tenant_id ON pump_models (tenant_id);

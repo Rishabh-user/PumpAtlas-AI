@@ -75,7 +75,11 @@ DECLARE
         'data_quality_flags', 'ai_suggestions', 'duplicate_candidates',
         'requirement_profiles', 'comparisons', 'comparison_items',
         'saved_searches', 'tagged_records', 'record_versions',
-        'audit_logs', 'tenant_permissions', 'api_keys'
+        'audit_logs', 'tenant_permissions', 'api_keys',
+        -- A client's approved supplier list tells a competitor who they will buy from,
+        -- and a registration identifier is theirs alone. Strictly private: no
+        -- shared-master read-through, unlike `vendors` itself.
+        'vendor_approvals', 'vendor_identifiers'
     ];
 BEGIN
     FOREACH t IN ARRAY private_tables LOOP

@@ -30,6 +30,7 @@ from app.schemas.entities import (
 from app.schemas.specs import SPEC_REGISTRY
 from app.services import (
     audit,
+    client_records,
     comparison,
     dedupe,
     designations,
@@ -440,7 +441,7 @@ def pump_profile(
         ),
         pump=records.to_jsonable({c.name: getattr(pump, c.name) for c in pump.__table__.columns}),
         vendor=records.to_jsonable(
-            {c.name: getattr(vendor, c.name) for c in vendor.__table__.columns}
+            {c.name: getattr(vendor, c.name) for c in client_records.vendor_columns(db)}
         )
         if vendor
         else {},

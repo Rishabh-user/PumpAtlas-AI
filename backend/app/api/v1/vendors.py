@@ -20,7 +20,7 @@ from app.models.enums import (
 )
 from app.models.pump import Pump, PumpModel
 from app.models.source import Source
-from app.models.vendor import Vendor
+from app.models.vendor import Vendor, VendorApproval, VendorIdentifier
 from app.schemas.ai import DuplicateCandidateOut, MergeRequest
 from app.schemas.common import Message, Page, ProvenanceEntry
 from app.schemas.entities import (
@@ -33,6 +33,7 @@ from app.schemas.entities import (
 )
 from app.services import (
     audit,
+    client_records,
     dedupe,
     discovery,
     dispatch,
@@ -67,8 +68,7 @@ def list_vendors(
         default=None,
         description=(
             "Which catalogue to list: 'shared' for shared master data, 'all' for every "
-            "catalogue the caller may see, or a tenant id. Defaults to 'shared' for a "
-            "platform administrator and 'all' for a tenant user."
+            "catalogue the caller may see, or a tenant id. Defaults to 'all'."
         ),
     ),
     limit: int = Query(default=25, ge=1, le=200),
@@ -89,7 +89,18 @@ def list_vendors(
     """
     stmt = select(Vendor).where(Vendor.deleted_at.is_(None), Vendor.merged_into_vendor_id.is_(None))
 
-    scope = tenant_scope or ("shared" if principal.is_platform_admin else "all")
+    # Defaults to every catalogue the caller may see, for everyone.
+    #
+    # Platform administrators used to default to 'shared', so that an unscoped list did
+    # not interleave shared records with each client's own and show a company held in
+    # both twice. That was a sensible default while shared master was 47 of 77 records.
+    # It stopped being one when a client's approved vendor lists were imported: 1,601 of
+    # 1,684 records now belong to a tenant, so the default hid 95% of the catalogue and
+    # the list read as empty to the person who had just loaded that data.
+    #
+    # The duplicate it reintroduces is explained rather than hidden - every row carries
+    # `also_in_other_tenancies`, and `merge_vendors` still refuses to cross a tenancy.
+    scope = tenant_scope or "all"
     if scope == "shared":
         stmt = stmt.where(Vendor.tenant_id.is_(None))
     elif scope != "all":
@@ -114,7 +125,15 @@ def list_vendors(
     if not include_shared_master:
         stmt = stmt.where(Vendor.tenant_id.isnot(None))
 
-    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    # Counted on the primary key, not on a subquery of the whole entity. Wrapping
+    # `select(Vendor)` in a subquery materialises every mapped column inside it - which
+    # asks for the deferred migration-003 columns and fails outright where that migration
+    # has not been applied, and asks the database for fifty-seven columns it then throws
+    # away everywhere else.
+    total = (
+        db.scalar(stmt.with_only_columns(func.count(Vendor.id), maintain_column_froms=True))
+        or 0
+    )
     rows = db.scalars(stmt.order_by(Vendor.name).limit(limit).offset(offset)).all()
 
     # The same company can legitimately exist once per tenancy: a client's own supplier
@@ -258,11 +277,37 @@ def vendor_profile(vendor_id: uuid.UUID, db: DbSession) -> dict:
 
     contacts = vendor_discovery.contact_rows(db, vendor.id)
 
+    approvals: list[dict] = []
+    identifiers: list[dict] = []
+    if client_records.structure_available(db):
+        approvals = [
+            {c.name: getattr(row, c.name) for c in row.__table__.columns}
+            for row in db.scalars(
+                select(VendorApproval)
+                .where(VendorApproval.vendor_id == vendor.id)
+                .order_by(VendorApproval.project, VendorApproval.package)
+            ).all()
+        ]
+        identifiers = [
+            {c.name: getattr(row, c.name) for c in row.__table__.columns}
+            for row in db.scalars(
+                select(VendorIdentifier)
+                .where(VendorIdentifier.vendor_id == vendor.id)
+                .order_by(VendorIdentifier.scheme)
+            ).all()
+        ]
+
     return {
         "vendor": records.to_jsonable(
-            {c.name: getattr(vendor, c.name) for c in vendor.__table__.columns}
+            {c.name: getattr(vendor, c.name) for c in client_records.vendor_columns(db)}
         ),
         "contacts": [records.to_jsonable(row) for row in contacts],
+        # What the client's own documents state about this supplier: which packages it
+        # is approved for, on which project, and the registration identifiers that
+        # identify it independently of its trading name. Empty until migration 003 is
+        # applied, which is why the read is guarded rather than assumed.
+        "approvals": [records.to_jsonable(row) for row in approvals],
+        "identifiers": [records.to_jsonable(row) for row in identifiers],
         "product_lines": [
             {
                 "pump_id": str(pump.id),

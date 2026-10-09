@@ -39,6 +39,20 @@ export interface VendorProfileResponse {
   }[];
   open_flags: QualityFlag[];
   provenance_summary: ProvenanceSummary;
+  /**
+   * What the client's own documents state: the packages this supplier is approved for,
+   * and the registration identifiers that name it independently of its trading name.
+   * Empty arrays until migration 003 is applied.
+   */
+  approvals?: {
+    project: string;
+    package: string;
+    approved_country: string | null;
+    document_reference: string | null;
+    status: string;
+    expires_on: string | null;
+  }[];
+  identifiers?: { scheme: string; value: string }[];
 }
 
 export async function generateMetadata({

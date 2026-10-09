@@ -307,16 +307,36 @@ def resolve_pump(
         pump_name = UNSPECIFIED_LINE.format(vendor=vendor.name)
     normalized = normalize_company_name(pump_name) or normalize_model_code(pump_name)
 
-    existing = db.scalar(
+    # Matched on the squashed form as well as the normalised one, within this vendor.
+    #
+    # A package is written differently by different documents: the ONGC list says
+    # "Firewater Pump" and the Kikeh list says "FIRE WATER PUMP", and Framo ended up with
+    # two product lines for the one piece of equipment. The same split put "Flowserve
+    # unspecified line" beside "Flow Serve unspecified line".
+    #
+    # Only where the vendor is the same, and only where the two differ by spacing and
+    # punctuation alone - "Sea Water Lift Pump" and "Sea Water Injection Pumps" squash to
+    # different strings and stay apart, which is the distinction that matters.
+    candidates = db.scalars(
         select(Pump).where(
             Pump.tenant_id == tenant_id,
             Pump.vendor_id == vendor.id,
-            Pump.normalized_name == normalized,
             Pump.deleted_at.is_(None),
         )
-    )
-    if existing is not None:
-        return existing
+    ).all()
+    squashed = normalize_model_code(pump_name)
+    for candidate in candidates:
+        if candidate.normalized_name == normalized:
+            return candidate
+    for candidate in candidates:
+        if squashed and normalize_model_code(candidate.name) == squashed:
+            log.info(
+                "promotion.pump_line_spelling_matched",
+                vendor=vendor.name,
+                held=candidate.name,
+                stated=pump_name,
+            )
+            return candidate
 
     pump = Pump(
         tenant_id=tenant_id,
