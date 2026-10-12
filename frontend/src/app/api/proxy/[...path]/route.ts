@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { internalBase } from "@/lib/server-url";
+
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -9,7 +11,6 @@ import {
   sessionCookieOptions,
 } from "@/lib/api-shared";
 
-const INTERNAL_BASE = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
 interface TokenPair {
   access_token: string;
@@ -24,7 +25,7 @@ interface TokenPair {
  * no longer active — so the caller passes the 401 on rather than retrying.
  */
 async function renew(refreshToken: string): Promise<TokenPair | null> {
-  const response = await fetch(`${INTERNAL_BASE}/api/v1/auth/refresh`, {
+  const response = await fetch(`${internalBase()}/api/v1/auth/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -58,7 +59,7 @@ async function forward(request: Request, path: string[]): Promise<Response> {
   }
 
   const incoming = new URL(request.url);
-  const target = `${INTERNAL_BASE}/api/v1/${path.join("/")}${incoming.search}`;
+  const target = `${internalBase()}/api/v1/${path.join("/")}${incoming.search}`;
   const method = request.method.toUpperCase();
   // Buffered once: a retry after renewal has to send the same body again.
   const body =

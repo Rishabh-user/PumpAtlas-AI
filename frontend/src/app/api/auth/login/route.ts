@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { internalBase, redirectTo, usingFallbackApi } from "@/lib/server-url";
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -7,7 +8,6 @@ import {
   sessionCookieOptions,
 } from "@/lib/api-shared";
 
-const INTERNAL_BASE = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
 
 /**
  * Exchanges credentials for a token and stores it in an httpOnly cookie.
@@ -25,20 +25,26 @@ export async function POST(request: Request) {
   // about it. Signing in is where someone meets this first, so it says so here.
   let response: Response;
   try {
-    response = await fetch(`${INTERNAL_BASE}/api/v1/auth/login`, {
+    response = await fetch(`${internalBase()}/api/v1/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
   } catch (cause) {
+    // Two different failures wear the same `TypeError: fetch failed`, and the advice
+    // differs completely: locally the API is not running; deployed, API_INTERNAL_URL was
+    // never set and this is talking to its own container.
+    const advice = usingFallbackApi()
+      ? "API_INTERNAL_URL is not set, so this is trying its own container. Set it to " +
+        "the API service's internal address."
+      : "Check the API is running (uvicorn app.main:app --reload --port 8000).";
     const message = encodeURIComponent(
-      `Could not reach the API at ${INTERNAL_BASE}. Check it is running ` +
-        `(uvicorn app.main:app --reload --port 8000). (${String(cause)})`.slice(0, 300),
+      `Could not reach the API at ${internalBase()}. ${advice} (${String(cause)})`.slice(
+        0,
+        300,
+      ),
     );
-    return NextResponse.redirect(
-      new URL(`/login?error=${message}`, request.url),
-      303,
-    );
+    return redirectTo(`/login?error=${message}`);
   }
 
   if (!response.ok) {
@@ -48,10 +54,7 @@ export async function POST(request: Request) {
     const message = encodeURIComponent(
       String(detail.detail ?? "Sign in failed"),
     );
-    return NextResponse.redirect(
-      new URL(`/login?error=${message}`, request.url),
-      303,
-    );
+    return redirectTo(`/login?error=${message}`);
   }
 
   const tokens = (await response.json()) as {
@@ -59,7 +62,7 @@ export async function POST(request: Request) {
     refresh_token: string;
     expires_in: number;
   };
-  const redirect = NextResponse.redirect(new URL("/", request.url), 303);
+  const redirect = redirectTo("/");
   redirect.cookies.set(ACCESS_TOKEN_COOKIE, tokens.access_token, {
     ...sessionCookieOptions(),
     maxAge: tokens.expires_in,

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { redirectTo } from "@/lib/server-url";
+
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -7,7 +9,7 @@ import {
 } from "@/lib/api-shared";
 
 export async function POST(request: Request) {
-  const redirect = NextResponse.redirect(new URL("/login", request.url), 303);
+  const redirect = redirectTo("/login");
   redirect.cookies.delete(ACCESS_TOKEN_COOKIE);
   // Leaving this behind would let the proxy renew a session the person just ended.
   redirect.cookies.delete(REFRESH_TOKEN_COOKIE);
