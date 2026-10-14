@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -52,6 +53,10 @@ class CurrentUser(UserOut):
     tenant_name: str | None = None
     tenant_slug: str | None = None
     permissions: dict[str, list[str]] = Field(default_factory=dict)
+    # Null means the password has never been changed since the account was created -
+    # which, for an account created from a documented default, is worth saying out loud
+    # on the screen where it can be changed. A timestamp, never the password itself.
+    password_changed_at: datetime | None = None
 
 
 class UserCreate(BaseModel):

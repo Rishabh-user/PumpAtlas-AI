@@ -232,3 +232,54 @@ def _actions_for(command: str) -> list[str]:
         for action in subparsers.choices[command]._actions  # noqa: SLF001
         for option in action.option_strings
     ]
+
+
+class TestChangingYourOwnPassword:
+    """The endpoint existed from the start and nothing in the product called it.
+
+    So changing a password meant a shell on the server with the database credentials to
+    hand - a poor reason to hand out database access, and why the administrator account
+    kept its published default long after anyone wanted it gone. There is a screen for it
+    now; these pin what that screen is allowed to do.
+    """
+
+    def test_the_new_password_has_a_minimum_length(self):
+        import pydantic
+
+        from app.schemas.auth import PasswordChange
+
+        with pytest.raises(pydantic.ValidationError):
+            PasswordChange(current_password="x", new_password="short")
+
+    def test_a_long_enough_password_is_accepted(self):
+        from app.schemas.auth import PasswordChange
+
+        payload = PasswordChange(current_password="old", new_password="a" * 12)
+        assert payload.new_password == "a" * 12
+
+    def test_the_current_password_is_required(self):
+        """It is what stops a borrowed session locking the owner out of the account."""
+        import inspect
+
+        from app.api.v1 import auth as auth_routes
+
+        source = inspect.getsource(auth_routes.change_password)
+        assert "verify_password(payload.current_password" in source
+        assert "Current password is incorrect" in source
+
+    def test_the_change_is_audited(self):
+        import inspect
+
+        from app.api.v1 import auth as auth_routes
+
+        source = inspect.getsource(auth_routes.change_password)
+        assert "record_audit" in source
+        assert "password_changed_at" in source
+
+    def test_when_it_last_changed_is_visible_but_the_password_is_not(self):
+        """The screen says "never changed" for an account still on a documented default."""
+        from app.schemas.auth import CurrentUser
+
+        assert "password_changed_at" in CurrentUser.model_fields
+        assert "hashed_password" not in CurrentUser.model_fields
+        assert "password" not in CurrentUser.model_fields

@@ -433,6 +433,8 @@ export interface CurrentUser {
   tenant_name: string | null;
   tenant_slug: string | null;
   permissions: Record<string, string[]>;
+  /** Null means never changed since the account was created. A timestamp, not the password. */
+  password_changed_at?: string | null;
 }
 
 /* ----------------------------------------------------------------------- chat */

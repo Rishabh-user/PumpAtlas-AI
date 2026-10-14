@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Database, LogOut, Menu } from "lucide-react";
+import { Database, KeyRound, LogOut, Menu } from "lucide-react";
 
 import { ByTargeticon, LogoMark, Wordmark } from "@/components/brand";
 import { CommandPalette } from "@/components/shell/command-palette";
@@ -138,6 +138,15 @@ export function Topbar({
               ))}
               {user?.is_platform_admin ? <Badge>Platform admin</Badge> : null}
             </div>
+            <DropdownMenuSeparator />
+            {/* The password endpoint existed from the start with nothing calling it, so
+              * changing a password meant a shell on the server. */}
+            <DropdownMenuItem asChild>
+              <Link href="/account">
+                <KeyRound />
+                Your account
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <form action="/api/auth/logout" method="post">
               <DropdownMenuItem asChild>
