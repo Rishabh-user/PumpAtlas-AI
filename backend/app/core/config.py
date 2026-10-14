@@ -24,6 +24,19 @@ class Settings(BaseSettings):
     # ---------- core ----------
     PROJECT_NAME: str = "PumpAtlas AI"
     ENVIRONMENT: str = "development"
+
+    #: Bearer token a Prometheus scraper must present for `/metrics`.
+    #:
+    #: The Compose deployment put nginx in front and restricted that path to private
+    #: networks. A platform deployment has no nginx, so the endpoint is reachable from
+    #: the internet and was answering anybody - exposing every route name, its traffic
+    #: and its latencies. Unset in production, the endpoint is disabled rather than
+    #: public: a monitoring endpoint nobody scrapes is a smaller problem than an open one.
+    METRICS_TOKEN: str = ""
+
+    #: Whether the per-caller ceilings in `app.core.rate_limit` are enforced. On by
+    #: default: the endpoints they guard spend provider money per call.
+    RATE_LIMIT_ENABLED: bool = True
     LOG_LEVEL: str = "INFO"
     API_V1_PREFIX: str = "/api/v1"
 
@@ -174,11 +187,37 @@ class Settings(BaseSettings):
         return self.SECRET_KEY == DEV_SECRET_KEY or len(self.SECRET_KEY) < MIN_SECRET_KEY_CHARS
 
     @property
+    def wildcard_cors_in_production(self) -> bool:
+        """`CORS_ORIGINS=*` on a deployed instance, which `cors_origins` refuses."""
+        return self.CORS_ORIGINS.strip() == "*" and self.is_production
+
+    @property
     def cors_origins(self) -> list[str]:
-        """Comma-separated origins, or `*` to allow any (development only)."""
+        """Comma-separated origins, or `*` to allow any - development only.
+
+        The wildcard is refused in production rather than honoured. The app sends
+        `allow_credentials=True`, and Starlette answers a credentialed wildcard by
+        echoing back whatever `Origin` asked, so `*` means any website on the internet
+        may call this API as whoever is signed in to it.
+
+        Today that is latent rather than live: the browser never calls this API
+        directly. Every request goes through the Next proxy on its own origin, which
+        swaps an httpOnly cookie for an `Authorization` header, so a hostile page has
+        no cookie to send and no token to read. It stops being latent the first time
+        anything points a browser at this API directly - which is exactly what the
+        issued API keys invite.
+
+        Failing closed means a deployment that set `*` loses cross-origin access and
+        says so in the log, instead of quietly keeping a door open. The fix is to name
+        the frontend's origin, which is what the blueprint asks for anyway.
+        """
         raw = self.CORS_ORIGINS.strip()
         if raw == "*":
-            return ["*"]
+            if not self.is_production:
+                return ["*"]
+            # No logger here: this module is imported before logging is configured.
+            # `/ready` reports it, and `main` logs it once at startup.
+            return []
         origins = []
         for entry in raw.split(","):
             origin = entry.strip().rstrip("/")

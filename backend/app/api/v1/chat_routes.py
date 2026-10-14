@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core import rate_limit
 from app.core.deps import CurrentPrincipal, DbSession, require
 from app.core.logging import get_logger
 from app.services import chat, discovery, dispatch, pump_discovery, vendor_discovery
@@ -112,7 +113,10 @@ def context(principal: CurrentPrincipal, db: DbSession) -> dict[str, Any]:
     }
 
 
-@router.post("/ask", dependencies=[Depends(require("search", "read"))])
+@router.post(
+    "/ask",
+    dependencies=[Depends(require("search", "read")), rate_limit.limiter("ai_ask")],
+)
 def ask(payload: AskRequest, principal: CurrentPrincipal, db: DbSession) -> dict[str, Any]:
     """Answer a question. Reads only."""
     result = chat.answer(

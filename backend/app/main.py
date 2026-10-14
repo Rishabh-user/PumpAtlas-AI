@@ -83,6 +83,19 @@ async def lifespan(app: FastAPI):
         ai_enabled=settings.AI_ENABLED,
         storage="s3" if settings.use_s3 else "local",
     )
+    if settings.wildcard_cors_in_production:
+        # `cors_origins` dropped it rather than honour a credentialed wildcard, so
+        # cross-origin calls now fail. Said once, loudly, because the symptom shows up
+        # in a browser console and the cause is in an environment variable.
+        log.error(
+            "startup.cors_wildcard_refused",
+            detail=(
+                "CORS_ORIGINS is '*', which with credentials lets any site call this "
+                "API as a signed-in user. It has been ignored and cross-origin calls "
+                "will be refused. Set CORS_ORIGINS to the frontend's origin, e.g. "
+                "https://pumpatlas-web.onrender.com"
+            ),
+        )
     if not check_database():
         # A missing database is a deployment problem, not a reason to crash-loop:
         # /ready reports it and the orchestrator can hold traffic back.

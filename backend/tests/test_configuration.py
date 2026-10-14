@@ -187,10 +187,41 @@ class TestTheDeployedOriginsAreRealOrigins:
 
         assert Settings(CORS_ORIGINS="https://a.example/").cors_origins == ["https://a.example"]
 
-    def test_the_wildcard_still_means_everything(self):
+    def test_the_wildcard_still_means_everything_on_a_laptop(self):
         from app.core.config import Settings
 
-        assert Settings(CORS_ORIGINS="*").cors_origins == ["*"]
+        assert Settings(CORS_ORIGINS="*", ENVIRONMENT="development").cors_origins == ["*"]
+
+    def test_the_wildcard_is_refused_in_production(self):
+        """A credentialed wildcard is any site calling this API as a signed-in user.
+
+        Starlette answers `allow_origins=["*"]` plus `allow_credentials=True` by echoing
+        back whatever `Origin` asked for, which is not a wildcard at all - it is consent
+        to every origin individually. Failing closed loses cross-origin access and says
+        so; honouring it keeps a door open nobody meant to open.
+        """
+        from app.core.config import Settings
+
+        for environment in ("production", "prod", "PRODUCTION"):
+            assert Settings(CORS_ORIGINS="*", ENVIRONMENT=environment).cors_origins == []
+
+    def test_the_refusal_is_reportable(self):
+        """So `/ready` and the startup log can name the cause of the browser error."""
+        from app.core.config import Settings
+
+        assert Settings(CORS_ORIGINS="*", ENVIRONMENT="production").wildcard_cors_in_production
+        assert not Settings(CORS_ORIGINS="*", ENVIRONMENT="development").wildcard_cors_in_production
+        assert not Settings(
+            CORS_ORIGINS="https://a.example", ENVIRONMENT="production"
+        ).wildcard_cors_in_production
+
+    def test_a_real_origin_in_production_is_untouched(self):
+        """The fix must not punish a deployment that configured this correctly."""
+        from app.core.config import Settings
+
+        assert Settings(
+            CORS_ORIGINS="pumpatlas-web.onrender.com", ENVIRONMENT="production"
+        ).cors_origins == ["https://pumpatlas-web.onrender.com"]
 
     def test_several_origins_are_each_normalised(self):
         from app.core.config import Settings

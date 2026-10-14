@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
+from app.core import rate_limit
 from app.core.config import settings
 from app.core.db import set_tenant_guc
 from app.core.deps import CurrentPrincipal, DbSession
@@ -43,7 +44,13 @@ MAX_FAILED_LOGINS = 5
 LOCKOUT_MINUTES = 15
 
 
-@router.post("/login", response_model=TokenPair)
+@router.post(
+    "/login",
+    response_model=TokenPair,
+    # The account lock already stops credential stuffing against one account; this stops
+    # one caller working through many of them.
+    dependencies=[rate_limit.limiter("login")],
+)
 def login(payload: LoginRequest, request: Request, db: DbSession) -> TokenPair:
     """Exchange credentials for an access + refresh token pair."""
     # Reading users before a principal exists requires platform context.

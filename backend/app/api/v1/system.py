@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+import secrets
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy import text
 
 from app.ai.openrouter import OpenRouterClient
@@ -77,6 +80,20 @@ def ready(db: DbSession, response: Response) -> dict:
             "Set SECRET_KEY to at least 32 random characters: `openssl rand -hex 32`. "
             "It signs tokens and derives the key for stored AI credentials."
             if settings.secret_key_is_weak
+            else None
+        ),
+    }
+
+    # Reported next to the secret key because it is the same class of mistake: a value
+    # that is correct on a laptop and dangerous on the internet.
+    checks["cors"] = {
+        "status": "wildcard_refused" if settings.wildcard_cors_in_production else "ok",
+        "required": settings.is_production,
+        "detail": (
+            "CORS_ORIGINS is '*'. With credentials that lets any site call this API as "
+            "a signed-in user, so it has been ignored and cross-origin calls are "
+            "refused. Set CORS_ORIGINS to the frontend's origin."
+            if settings.wildcard_cors_in_production
             else None
         ),
     }
@@ -174,8 +191,34 @@ def tracked_fields() -> dict:
 
 
 @router.get("/metrics")
-def metrics() -> Response:
-    """Prometheus exposition. Scrape target for the observability stack."""
+def metrics(
+    authorization: Annotated[str | None, Header()] = None,
+) -> Response:
+    """Prometheus exposition, for a scraper that can prove it is one.
+
+    This used to answer anybody. Behind the Compose deployment that was fine - nginx
+    restricted the path to private networks - but a platform deployment has no nginx in
+    front, so the endpoint went to the internet still open, publishing every route name,
+    how often each is called and how long it takes. That is reconnaissance, handed over.
+
+    `METRICS_TOKEN` is the scraper's bearer token. Without one set, the endpoint stays
+    open in development, where it is on a laptop, and is **disabled in production**,
+    because a metrics endpoint nobody scrapes is a smaller problem than an open one.
+    """
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    expected = settings.METRICS_TOKEN
+    if not expected:
+        if settings.is_production:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "Metrics are disabled. Set METRICS_TOKEN to enable scraping.",
+            )
+    else:
+        supplied = (authorization or "").removeprefix("Bearer ").strip()
+        # Constant time: a token is a secret, and comparing it with == leaks its prefix
+        # to anyone willing to measure.
+        if not supplied or not secrets.compare_digest(supplied, expected):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Metrics token required")
 
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

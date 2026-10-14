@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from sqlalchemy import func, select
 
 from app.ai.parallel_search import pump_model_objective, vendor_range_objective
+from app.core import rate_limit
 from app.core.deps import CurrentPrincipal, DbSession, require
 from app.models.ai import DataQualityFlag
 from app.models.audit import RecordVersion
@@ -254,7 +255,7 @@ def create_pump_model(
 
 @router.post(
     "/pump-models/{pump_model_id}/enrich",
-    dependencies=[Depends(require("pump", "write"))],
+    dependencies=[Depends(require("pump", "write")), rate_limit.limiter("ai_enrich")],
 )
 def enrich_pump_model(
     pump_model_id: uuid.UUID,

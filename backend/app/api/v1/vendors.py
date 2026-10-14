@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.ai.parallel_search import vendor_intelligence_objective
+from app.core import rate_limit
 from app.core.deps import CurrentPrincipal, DbSession, require
 from app.models.ai import DataQualityFlag, FieldProvenance
 from app.models.audit import RecordVersion
@@ -496,7 +497,10 @@ def delete_vendor(vendor_id: uuid.UUID, principal: CurrentPrincipal, db: DbSessi
 @router.post(
     "/{vendor_id}/enrich",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require("ingestion", "write"))],
+    dependencies=[
+        Depends(require("ingestion", "write")),
+        rate_limit.limiter("ai_enrich"),
+    ],
 )
 def enrich_vendor(
     vendor_id: uuid.UUID,
