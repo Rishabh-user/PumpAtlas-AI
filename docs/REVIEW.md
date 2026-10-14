@@ -14,6 +14,57 @@ path that bypasses the guarantees the rest of the system is built on.
 
 ---
 
+## Status — 14 October 2026
+
+A second pass, eight days on. Everything below was re-measured against the running
+system today, through a platform-admin session: an unscoped connection sees 53 of 1,692
+vendors, because row-level security is doing its job, and counting through one would
+have understated this database by 97%.
+
+### Closed since the first review
+
+| | What changed |
+| --- | --- |
+| **C1** Version control | Done. A repository with history on `main`, pushed to a remote. |
+| **H3** No rate limiting | Done. `app/core/rate_limit.py` bounds the two endpoints that spend provider money (20 AI questions and 10 enrichments per caller per hour) and login (10 per 5 minutes). Verified against a live instance: ten 401s, then 429 with `Retry-After: 280`. Counted **in memory, so per process** — two instances allow twice the rate and a restart forgets. That stops a runaway client, which is the failure that empties a provider account; it is not a cross-instance guarantee, and the module says so. |
+| **`/metrics` was public** | Found in this pass, now closed. `infra/nginx.conf` restricted that path to private networks — and there is no nginx in front of a Render service, so the endpoint was answering the internet with every route name, its traffic and its latencies. Now: unset `METRICS_TOKEN` in production disables it, a wrong token is 401, compared with `secrets.compare_digest`. |
+| **Credentialed CORS wildcard** | Found in this pass, now closed. `CORS_ORIGINS=*` with `allow_credentials=True` is not a wildcard — Starlette echoes back whatever `Origin` asked, which is consent to every origin individually. It is refused in production and reported by `/ready`. Latent rather than live, because the browser never calls this API directly: it goes through the Next proxy, which swaps an httpOnly cookie for a header. It would have stopped being latent the first time anything pointed a browser at the API — which is exactly what the two issued keys invite. |
+| **Changing a password needed a database shell** | `POST /auth/change-password` existed from the start and nothing called it, so the only way to change one was psql. There is now an `/account` page. All six active users have since changed theirs. |
+
+### Still open, verified today
+
+| Finding | Measured now |
+| --- | --- |
+| **C2** Client documents in git | **Half closed, and the dangerous half is still open.** They are now in `.gitignore` and out of the index — and they are *already in the history that has already been pushed*. Ignoring a file does not remove it from the commits that carry it. This needs a history rewrite and a force-push, or a fresh repository; until then, treat the contents as disclosed. |
+| **C3** Migration 002 | **Still unapplied.** `vendor_contacts` has none of `source_id`, `captured_at`, `origin`. |
+| Migration 003 | **Still unapplied.** No `vendor_approvals` table, and `vendors` has none of the six new columns. The ORM carries them as `deferred=True` and `VendorOut` excludes them precisely so the application keeps working without them — that scaffolding is load-bearing until the migration runs. |
+| **H1** Contacts trapped in JSON | **Unchanged: `vendor_contacts` holds 1 row.** 1,426 named contacts are still inside a JSON blob, unsearchable and outside provenance. |
+| **H4** Completeness unset | Unchanged — `repair_vendor_data` still needs its `--commit` run. |
+| Failed AI jobs | 9. |
+
+Nothing in this section is blocked on code. Every one of them is a command to run against
+the database, listed under *What I would do, in order*.
+
+### Housekeeping done in this pass
+
+- The rate-limit and metrics tests ran for **14 minutes 32 seconds** and failed one case,
+  because they signed in twenty-four times over real HTTP to watch a limiter bite —
+  against a database 300ms away, with bcrypt on every attempt, on the deployed system.
+  Rewritten to test the counter where it lives: **1.9 seconds, 19 passing**, nothing
+  touching the database. A test that hammers production to prove an in-memory counter
+  works is a bad trade twice over.
+- `METRICS_TOKEN` and `RATE_LIMIT_ENABLED` were added to the code and not to
+  `.env.example`. The configuration test caught it, which is what it is for.
+- `npm run lint` was wired up with ESLint installed and **no config file**, so it did not
+  lint — it dropped into Next's interactive setup wizard, which hangs a terminal and
+  fails CI for reasons unrelated to the code. Config added; the 18 real errors it then
+  found are fixed (dead imports, an `<a>` doing a full page reload where `<Link>` belongs,
+  a `require()` in an ES module). Lint, typecheck and build are clean.
+- `frontend/tsconfig.tsbuildinfo` was tracked: machine-local build state, rewritten every
+  build, a guaranteed merge conflict. Now ignored.
+
+---
+
 ## What is working
 
 Credit where it is due, because these are the parts that are expensive to add later.
@@ -21,7 +72,7 @@ Credit where it is due, because these are the parts that are expensive to add la
 | | Evidence |
 | --- | --- |
 | Tenant isolation | Row-level security **enabled and forced** on every tenant table, with policies — `vendors`, `pump_models`, `search_index`, `vendor_contacts`, `field_provenance`, `sources`, `audit_logs`, `users`, `api_keys`. The application connects as `pumpatlas_app`: not a superuser, and **does not bypass RLS**. Isolation cannot be undone by an application bug. |
-| Tests | 879 passing, 32 skipped (all requiring a live stack), lint clean across `app`, `tests` and `scripts`. |
+| Tests | 961 passing, 32 skipped (all requiring a live stack), in 21 seconds. Lint clean across `app`, `tests` and `scripts`; frontend lint, typecheck and build clean. |
 | Frontend | Compiles clean; the client/server boundary check passes across 98 files and 44 client modules. |
 | Traceability | 1,634 field-provenance rows, 184 record versions, 508 audit entries. Every AI-written value carries a verbatim quote or it is refused. |
 | Deduplication | **Zero** duplicate normalised names within any tenancy, across 1,684 vendors. |
@@ -229,13 +280,67 @@ These were raised in earlier sessions and I cannot confirm their state from here
 
 ## What I would do, in order
 
-1. **Add the client documents to `.gitignore`** (C2) — five minutes, and it must precede step 2.
-2. **`git init` and commit** (C1). Nothing else on this list is safe to do without it.
-3. **Apply migration 002** (C3), restart the API.
-4. **Move the 1,426 contacts out of `extra`** (H1) — the biggest visible improvement for the least work.
-5. **Run `repair_vendor_data --commit`** (H4), and the two queue cleanups (M4).
-6. **Put a limiter on the AI endpoints** (H3) before the other project goes live.
-7. **Give the imported approvals an approver and an expiry** (H2).
-8. **Stand up Redis and a worker** (M1) when discovery stops being something a person watches.
+Rewritten 14 October. Steps 1, 2 and 6 of the original list are done; what remains is
+almost entirely database work, and none of it is blocked on code.
 
-Items 1–5 are a day's work and remove every finding that is currently costing something.
+1. **Purge the client documents from git history** — the one finding that gets worse with
+   time, because the repository is already pushed. They are ignored and untracked now, so
+   nothing new is being added, but every existing commit still carries them. Either
+   rewrite the history and force-push, or delete the remote repository and push a fresh
+   one with no history. Until then the contents are disclosed: 1,426 named contacts with
+   direct numbers, GST and PAN registrations for 691 suppliers, and bank details.
+
+2. **Apply migrations 002 and 003**, then restart the API.
+
+   From the repository root. `--file` is what applies one incremental migration to a
+   database that already has tables; without it the script refuses to touch one.
+
+   ```bash
+   python scripts/apply_schema.py --url "$OWNER_DATABASE_URL" --file db/migrations/002_vendor_contact_provenance.sql
+   ```
+
+   ```bash
+   python scripts/apply_schema.py --url "$OWNER_DATABASE_URL" --file db/migrations/003_client_vendor_structure.sql
+   ```
+
+   Connect as the database **owner**, not `pumpatlas_app` — the application role has no
+   DDL rights by design, which is why these have to be run by hand. Omitting `--url`
+   falls back to the app's own configuration, which is the role that cannot do it.
+   003 brings its own forced row-level security; the vendor identifier tables are
+   strictly tenant-private, with no shared-master read.
+
+3. **Move the 1,426 contacts out of `extra`** — still the largest visible gain for the
+   least work, and it needs 002 first so each contact can carry where it came from.
+   These run as modules, so from `backend/`. Every one of them is a dry run until
+   `--commit`; read what the dry run says it will do before passing it.
+
+   ```bash
+   python -m scripts.backfill_contact_details          # dry run first
+   python -m scripts.backfill_contact_details --commit
+   ```
+
+4. **Structure the client records** (needs 003), then repair the derived figures:
+
+   ```bash
+   python -m scripts.structure_client_data --commit
+   python -m scripts.repair_vendor_data --commit
+   python -m scripts.clear_category_candidates --commit
+   python -m scripts.flag_category_models --commit
+   ```
+
+5. **Give the imported approvals an approver and an expiry** (H2) — 241 vendors are
+   approved with nobody accountable.
+
+6. **Rotate the five credentials that reached a chat transcript**: the Render owner
+   database password, the `pumpatlas_app` password, and the OpenAI, Anthropic and
+   Parallel keys. Treat them as compromised regardless of how the transcript is stored.
+
+7. **Set `METRICS_TOKEN`** in the Render dashboard if anything should scrape metrics;
+   leave it empty and the endpoint stays off, which is the safe default.
+
+8. **Stand up Redis and a worker** (M1) when discovery stops being something a person
+   watches. Until then an API restart kills every run in flight.
+
+Steps 2–4 are a few hours and close every finding that is currently costing something.
+Step 1 is the one that cannot be deferred, because it is the only one where waiting
+increases the damage.
