@@ -23,3 +23,15 @@ node_modules/
 out/
 uploads/
 venv/
+
+# The client's own commercial documents. 1,426 named contacts with direct phone
+# numbers and email addresses, GST and PAN registration numbers for 691 suppliers,
+# and bank account details - none of it ours to publish. The scripts under
+# backend/scripts read them from this directory; keeping them on disk and out of the
+# index is the point. Removing them here does NOT remove them from the commits that
+# already carry them - see docs/REVIEW.md.
+Approved Vendor List/
+
+# Incremental TypeScript build state. Machine-local, rewritten on every build, and a
+# guaranteed merge conflict.
+frontend/tsconfig.tsbuildinfo
