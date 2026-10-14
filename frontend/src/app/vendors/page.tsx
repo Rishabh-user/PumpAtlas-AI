@@ -21,7 +21,6 @@ import {
 } from "@/components/ui/table";
 import { externalHref, hrefToString } from "@/lib/href";
 import { ApiError, apiFetch, hasSession } from "@/lib/api";
-import { num, ratioAsPct } from "@/lib/format";
 import { approvalLabel, humanise, vendorTierLabel } from "@/lib/labels";
 import { loadShellContext } from "@/lib/session";
 import type { Page, Vendor } from "@/types/api";

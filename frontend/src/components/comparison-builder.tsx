@@ -5,21 +5,14 @@ import Link from "next/link";
 
 import { clientFetch } from "@/lib/api-client";
 import { isCurrencyCompanion, specValue } from "@/components/format-spec";
-import { fieldLabel, humanise } from "@/lib/labels";
+import { fieldLabel } from "@/lib/labels";
 import { scoreText } from "@/components/data/scorecard";
 import { EmptyState, ErrorState } from "@/components/data/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,

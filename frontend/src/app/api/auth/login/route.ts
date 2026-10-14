@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import { internalBase, redirectTo, usingFallbackApi } from "@/lib/server-url";
 import {
   ACCESS_TOKEN_COOKIE,
@@ -7,7 +5,6 @@ import {
   REFRESH_TOKEN_MAX_AGE,
   sessionCookieOptions,
 } from "@/lib/api-shared";
-
 
 /**
  * Exchanges credentials for a token and stores it in an httpOnly cookie.

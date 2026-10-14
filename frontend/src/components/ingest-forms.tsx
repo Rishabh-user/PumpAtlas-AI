@@ -13,8 +13,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { clientFetch } from "@/lib/api-client";
 
-type Tab = "upload" | "urls" | "search";
-
 export function IngestForms() {
   return (
     <Card>

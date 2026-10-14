@@ -42,13 +42,11 @@ function confidenceTone(value: number | null): string {
 
 function Candidate({
   candidate,
-  kind,
   checked,
   onToggle,
   onReview,
 }: {
   candidate: DiscoveryCandidate;
-  kind: DiscoveryKindConfig;
   checked: boolean;
   onToggle: () => void;
   onReview: () => void;
@@ -257,7 +255,6 @@ export function CandidateList({
         <Candidate
           key={candidate.id}
           candidate={candidate}
-          kind={kind}
           checked={selected.includes(candidate.id)}
           onToggle={() => onToggle(candidate.id)}
           onReview={() => onReview(candidate)}

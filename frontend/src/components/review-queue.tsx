@@ -9,7 +9,7 @@ import { clientFetch } from "@/lib/api-client";
 import { dateOnly, editableValue, fieldValue } from "@/lib/format";
 import { fieldLabel, humanise } from "@/lib/labels";
 import { ConfidenceChip } from "@/components/data/confidence";
-import { EmptyState, ErrorState, SuccessNote } from "@/components/data/states";
+import { EmptyState, SuccessNote } from "@/components/data/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";

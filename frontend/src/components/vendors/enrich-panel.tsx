@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ExternalLink, History, Loader2, Sparkles } from "lucide-react";
+import { History, Loader2, Sparkles } from "lucide-react";
 
 import { ErrorState } from "@/components/data/states";
 import { DiscoveryProgress } from "@/components/discovery/progress";

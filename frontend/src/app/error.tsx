@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { CircleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -31,7 +33,7 @@ export default function GlobalError({
         <div className="mt-6 flex items-center justify-center gap-1.5">
           <Button onClick={reset}>Try again</Button>
           <Button variant="outline" asChild>
-            <a href="/">Back to search</a>
+            <Link href="/">Back to search</Link>
           </Button>
         </div>
       </div>

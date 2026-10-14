@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import { redirectTo } from "@/lib/server-url";
 
 import {
@@ -8,7 +6,7 @@ import {
   TENANT_COOKIE,
 } from "@/lib/api-shared";
 
-export async function POST(request: Request) {
+export async function POST() {
   const redirect = redirectTo("/login");
   redirect.cookies.delete(ACCESS_TOKEN_COOKIE);
   // Leaving this behind would let the proxy renew a session the person just ended.
