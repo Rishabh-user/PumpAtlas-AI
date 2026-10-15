@@ -104,13 +104,28 @@ def score_pump_model(
     return cards, record
 
 
+def _as_score(value: float | None) -> Decimal | None:
+    """A score column takes a number or nothing; `Decimal("None")` raises."""
+    return None if value is None else Decimal(str(value))
+
+
 def _upsert_score(
     db: Session,
     pump_model_id: uuid.UUID,
     tenant_id: Any,
     card: scoring.Scorecard,
     profile: RequirementProfile | None,
-) -> ConfidenceScore:
+) -> ConfidenceScore | None:
+    """Store the card, or remove any stored score when there is nothing to store.
+
+    `confidence_scores.score` is NOT NULL, so an unscorable card has no row to write -
+    and absence is the right representation anyway: no row means nothing was scored,
+    where a 0.000 row would mean "scored, and terrible".
+
+    An existing row is deleted rather than left behind. Data can be withdrawn - a spec
+    corrected away, a source retracted - and a stale row would go on asserting a score
+    the evidence no longer supports.
+    """
     profile_id = profile.id if profile else None
     existing = db.scalar(
         select(ConfidenceScore).where(
@@ -120,6 +135,10 @@ def _upsert_score(
             ConfidenceScore.requirement_profile_id == profile_id,
         )
     )
+    if card.score is None:
+        if existing is not None:
+            db.delete(existing)
+        return None
     row = existing or ConfidenceScore(
         tenant_id=(profile.tenant_id if profile else None) or tenant_id,
         entity_type="pump_models",
@@ -189,11 +208,11 @@ def build_comparison(
             comparison_id=comparison.id,
             pump_model_id=pump_model_id,
             position=position,
-            technical_score=Decimal(str(cards["technical"].score)),
-            commercial_score=Decimal(str(cards["commercial"].score)),
-            delivery_risk_score=Decimal(str(cards["delivery"].score)),
-            data_confidence_score=Decimal(str(cards["data_confidence"].score)),
-            overall_score=Decimal(str(overall.score)),
+            technical_score=_as_score(cards["technical"].score),
+            commercial_score=_as_score(cards["commercial"].score),
+            delivery_risk_score=_as_score(cards["delivery"].score),
+            data_confidence_score=_as_score(cards["data_confidence"].score),
+            overall_score=_as_score(overall.score),
             score_breakdown={
                 kind: {
                     "score": card.score,
@@ -227,7 +246,16 @@ def build_comparison(
         )
 
     # Compliant candidates rank first; disqualified ones keep a rank so they stay visible.
-    ordered = sorted(scored, key=lambda pair: (pair[0].disqualified, -pair[1]))
+    #
+    # A candidate nobody could score sits between the two: below anything with evidence,
+    # because it has not earned a place above it, and above a disqualified one, because
+    # failing a hard requirement is a finding and having no datasheet is not. Ranking it
+    # as zero would say the evidence came back bad, which is the error this whole change
+    # exists to stop.
+    ordered = sorted(
+        scored,
+        key=lambda pair: (pair[0].disqualified, pair[1] is None, -(pair[1] or 0.0)),
+    )
     for rank, (item, _) in enumerate(ordered, start=1):
         item.rank = rank
     for row in snapshot_rows:

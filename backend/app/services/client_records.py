@@ -300,6 +300,37 @@ def load_held(db: Session, vendor_ids: list) -> tuple[set, set]:
     return approvals, identifiers
 
 
+def load_field_provenance(db: Session, vendor_ids: list) -> dict:
+    """Which fields already carry provenance, for a whole batch, in one query.
+
+    `record_document_provenance` otherwise asks once per vendor. Across 1,684 vendors
+    that is 1,684 round trips to a database roughly 300ms away - about nine minutes
+    spent discovering that 1,601 of them have no rows at all, which is a single query's
+    worth of information. The caller loads once and passes the answer in.
+
+    Safe to load up front even though the loop writes as it goes: each vendor's set is
+    keyed by its own id, so a write against one vendor cannot stale another's entry, and
+    within a vendor the set is read once before any write.
+
+    Chunked because this runs against every vendor at once, and a single `IN` list of
+    unbounded length is a parameter limit waiting to be hit.
+    """
+    held: dict = {}
+    if not vendor_ids:
+        return held
+    chunk = 500
+    for start in range(0, len(vendor_ids), chunk):
+        batch = vendor_ids[start : start + chunk]
+        for entity_id, field_name in db.execute(
+            select(FieldProvenance.entity_id, FieldProvenance.field_name).where(
+                FieldProvenance.entity_type == "vendors",
+                FieldProvenance.entity_id.in_(batch),
+            )
+        ).all():
+            held.setdefault(entity_id, set()).add(field_name)
+    return held
+
+
 #: The columns a client document establishes, and which therefore need provenance.
 #:
 #: Without a provenance row a value is untraceable *and* unprotected: the guard in
@@ -318,7 +349,9 @@ DOCUMENT_ESTABLISHED_FIELDS = (
 )
 
 
-def record_document_provenance(db: Session, vendor: Vendor) -> int:
+def record_document_provenance(
+    db: Session, vendor: Vendor, *, held: dict | None = None
+) -> int:
     """Say where each imported value came from, and protect it from being overwritten.
 
     The evidence is the document itself - a signed approved suppliers list, a project
@@ -343,15 +376,20 @@ def record_document_provenance(db: Session, vendor: Vendor) -> int:
         if vendor.confidence_level == ConfidenceLevel.VERIFIED
         else ConfidenceLevel.THIRD_PARTY
     )
-    held = {
-        name
-        for (name,) in db.execute(
-            select(FieldProvenance.field_name).where(
-                FieldProvenance.entity_type == "vendors",
-                FieldProvenance.entity_id == vendor.id,
-            )
-        ).all()
-    }
+    # One query for the whole batch when the caller has done it; otherwise one for this
+    # vendor, so a single-record caller still works without ceremony.
+    if held is None:
+        already = {
+            name
+            for (name,) in db.execute(
+                select(FieldProvenance.field_name).where(
+                    FieldProvenance.entity_type == "vendors",
+                    FieldProvenance.entity_id == vendor.id,
+                )
+            ).all()
+        }
+    else:
+        already = held.get(vendor.id, set())
 
     context = provenance.ProvenanceContext(
         # Not MANUAL and not AI: a document the client supplied, loaded by a script.
@@ -363,7 +401,7 @@ def record_document_provenance(db: Session, vendor: Vendor) -> int:
 
     written = 0
     for name in DOCUMENT_ESTABLISHED_FIELDS:
-        if name in held:
+        if name in already:
             continue
         value = getattr(vendor, name, None)
         if not completeness.is_recorded(value):

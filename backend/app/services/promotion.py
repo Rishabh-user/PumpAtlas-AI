@@ -118,9 +118,6 @@ MIN_SUBJECT_ALNUM = 3
 UNSPECIFIED_LINE = "{vendor} unspecified line"
 UNSPECIFIED_VARIANT = "{pump} (unspecified variant)"
 
-_PLACEHOLDER_MARKERS = ("unspecified line", "unspecified variant")
-
-
 def is_placeholder_designation(value: str | None) -> bool:
     """Whether this name was invented by the resolver rather than read off a page.
 
@@ -128,9 +125,12 @@ def is_placeholder_designation(value: str | None) -> bool:
     "Bornerman unspecified line (unspecified variant)" datasheet reads two pages, finds
     nothing, and reports that the record could not be filled - when the truth is that
     there was never a product to look for.
+
+    Kept here under its original name because callers import it from this module; the
+    markers themselves live in `designations`, with the rest of the reasoning about what
+    a designation is, so there is one definition rather than two that can drift.
     """
-    text = (value or "").lower()
-    return any(marker in text for marker in _PLACEHOLDER_MARKERS)
+    return designations.is_placeholder(value)
 
 
 def is_usable_subject_name(raw: str | None) -> bool:

@@ -2,6 +2,8 @@
 missing data scoring as good data, and a disqualified candidate out-ranking a compliant one.
 """
 
+import pytest
+
 from app.services import scoring
 
 PROFILE = {
@@ -169,3 +171,142 @@ def test_grades_map_to_bands():
     assert scoring.Scorecard(scoring.ScorecardKind.OVERALL, 60).grade == "C"
     assert scoring.Scorecard(scoring.ScorecardKind.OVERALL, 45).grade == "D"
     assert scoring.Scorecard(scoring.ScorecardKind.OVERALL, 10).grade == "E"
+
+
+class TestNothingToScoreIsNotAVerdict:
+    """A card with no evidence must not read as a card with bad evidence.
+
+    This was the live behaviour and it was actively misleading. A pump whose datasheet
+    nobody had read scored 0.0 and graded E on commercial fit and delivery risk, which a
+    buyer reads as "cheap rubbish that arrives late" rather than "nobody has looked".
+    Only 4 of 160 models carry commercial specs, so this was the ordinary case.
+    """
+
+    # Duty data from a nameplate, and nothing commercial or logistical - the normal
+    # state of a record that arrived without a datasheet.
+    NAMEPLATE_ONLY = {
+        "rated_capacity_m3h": 305,
+        "rated_head_m": 138,
+        "confidence_level": "ai_extracted",
+        "verification_status": "unverified",
+        "open_flag_count": 0,
+    }
+
+    def test_an_unscorable_card_has_no_score(self):
+        cards = scoring.score_all(self.NAMEPLATE_ONLY, PROFILE, tracked_fields=list(GOOD))
+        for name in ("commercial", "delivery"):
+            card = cards[name]
+            assert card.fields_evaluated == 0, name
+            assert card.score is None, name
+            assert card.scored is False, name
+
+    def test_an_unscorable_card_has_no_grade(self):
+        """Not 'E'. A caller showing a letter has to decide what to show instead."""
+        cards = scoring.score_all(self.NAMEPLATE_ONLY, PROFILE, tracked_fields=list(GOOD))
+        assert cards["commercial"].grade is None
+        assert cards["delivery"].grade is None
+
+    def test_a_card_with_one_evaluated_criterion_still_scores(self):
+        """The absence has to be total; one fact is enough to have an opinion."""
+        record = dict(self.NAMEPLATE_ONLY, warranty_months=24)
+        card = scoring.score_commercial_fit(record, PROFILE)
+        assert card.fields_evaluated == 1
+        assert card.score is not None
+        assert card.grade is not None
+
+    def test_an_unscorable_card_does_not_vote_in_the_overall(self):
+        """It contributes no opinion, rather than contributing a zero.
+
+        Commercial and delivery carry 45% of the default weighting between them. Feeding
+        them in as zeros made the overall score mostly a measure of what nobody had
+        recorded yet.
+        """
+        cards = scoring.score_all(self.NAMEPLATE_ONLY, PROFILE, tracked_fields=list(GOOD))
+        technical, confidence = cards["technical"].score, cards["data_confidence"].score
+        expected = (0.40 * technical + 0.15 * confidence) / (0.40 + 0.15)
+        assert cards["overall"].score == pytest.approx(expected, abs=0.05)
+
+    def test_the_overall_says_which_cards_abstained(self):
+        cards = scoring.score_all(self.NAMEPLATE_ONLY, PROFILE, tracked_fields=list(GOOD))
+        reasons = {c.name: c.reason for c in cards["overall"].criteria}
+        assert "not scored" in reasons["commercial"]
+        assert "not scored" in reasons["delivery"]
+
+    def test_an_abstaining_card_cannot_drag_the_overall_down(self):
+        """The point of the change, stated as the comparison that motivated it."""
+        sparse = scoring.score_all(self.NAMEPLATE_ONLY, PROFILE, tracked_fields=list(GOOD))
+        # Same evidence, plus commercial and delivery facts that happen to score badly.
+        with_bad_news = scoring.score_all(
+            dict(
+                self.NAMEPLATE_ONLY,
+                base_price_usd=900_000,
+                warranty_months=1,
+                standard_lead_time_weeks=29,
+                country_of_origin="NO",
+            ),
+            PROFILE,
+            tracked_fields=list(GOOD),
+        )
+        assert with_bad_news["commercial"].score is not None
+        # Knowing bad things must cost more than knowing nothing.
+        assert with_bad_news["overall"].score < sparse["overall"].score
+
+    def test_a_record_with_no_evidence_has_no_fit_scores(self):
+        cards = scoring.score_all({}, {}, tracked_fields=[])
+        assert cards["technical"].score is None
+        assert cards["commercial"].score is None
+        assert cards["delivery"].score is None
+
+    def test_data_confidence_still_scores_an_empty_record(self):
+        """Because "we know nothing" is itself a measurable finding, not an absence.
+
+        Its four criteria always evaluate: an unknown confidence level scores 10, an
+        unverified record 40, no open flags 100. That is a real statement about the
+        evidence, unlike commercial fit, which has nothing to form an opinion from.
+        """
+        cards = scoring.score_all({}, {}, tracked_fields=[])
+        assert cards["data_confidence"].score is not None
+        assert cards["data_confidence"].grade == "E"
+
+    def test_an_empty_record_cannot_produce_a_good_overall(self):
+        """The overall then rests on data confidence alone, which is E by construction.
+
+        So an unresearched record still reads as "do not rely on this" - it just gets
+        there by saying the evidence is thin, rather than by inventing two bad verdicts.
+        """
+        cards = scoring.score_all({}, {}, tracked_fields=[])
+        assert cards["overall"].score == pytest.approx(cards["data_confidence"].score)
+        assert cards["overall"].grade == "E"
+
+    def test_disqualification_still_forces_zero(self):
+        """An unscored card is an absence; a disqualification is a finding. Different."""
+        record = dict(GOOD, npsh_required_m=7.5)
+        cards = scoring.score_all(record, PROFILE, tracked_fields=list(GOOD))
+        assert cards["overall"].disqualified is True
+        assert cards["overall"].score == 0.0
+
+
+class TestScoresCrossTheStorageBoundary:
+    """`Decimal(str(None))` raises, and `confidence_scores.score` is NOT NULL.
+
+    Both were reachable the moment a card could return None, and neither was covered.
+    """
+
+    def test_a_score_converts_for_a_numeric_column(self):
+        from app.services.comparison import _as_score
+
+        assert _as_score(None) is None
+        assert str(_as_score(72.5)) == "72.5"
+
+    def test_ranking_places_unscored_below_scored_and_above_disqualified(self):
+        candidates = [
+            (type("I", (), {"disqualified": False})(), 60.0),
+            (type("I", (), {"disqualified": False})(), None),
+            (type("I", (), {"disqualified": True})(), 0.0),
+            (type("I", (), {"disqualified": False})(), 80.0),
+        ]
+        ordered = sorted(
+            candidates,
+            key=lambda pair: (pair[0].disqualified, pair[1] is None, -(pair[1] or 0.0)),
+        )
+        assert [p[1] for p in ordered] == [80.0, 60.0, None, 0.0]

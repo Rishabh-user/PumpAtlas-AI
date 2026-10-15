@@ -52,6 +52,10 @@ export function ScoreCard({
   grade?: string | null;
   missing?: number;
 }) {
+  // An unscored card is not a zero-scoring card: no number, no grade chip, no coloured
+  // bar, and a line that says so. Painting it as grade E was the whole problem - a pump
+  // whose datasheet nobody had read looked like one that had been assessed and failed.
+  const unscored = score === null || score === undefined;
   const value = score ?? 0;
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2.5">
@@ -69,15 +73,24 @@ export function ScoreCard({
           scoreText(score),
         )}
       >
-        {score === null ? EM_DASH : value.toFixed(1)}
+        {unscored ? EM_DASH : value.toFixed(1)}
       </div>
       <div className="mt-2 h-0.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn("h-full rounded-full", scoreBar(value))}
-          style={{ width: String(Math.max(0, Math.min(100, value))) + "%" }}
-        />
+        {unscored ? null : (
+          <div
+            className={cn("h-full rounded-full", scoreBar(value))}
+            style={{ width: String(Math.max(0, Math.min(100, value))) + "%" }}
+          />
+        )}
       </div>
-      {missing !== undefined && missing > 0 ? (
+      {unscored ? (
+        <p className="mt-1.5 text-2xs text-muted-foreground">
+          Not scored
+          {missing !== undefined && missing > 0
+            ? ` — ${missing} field${missing === 1 ? "" : "s"} not recorded`
+            : ""}
+        </p>
+      ) : missing !== undefined && missing > 0 ? (
         <p className="mt-1.5 text-2xs text-sev-medium">
           {missing} field{missing === 1 ? "" : "s"} not recorded
         </p>

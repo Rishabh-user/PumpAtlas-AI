@@ -90,8 +90,10 @@ export interface ScorecardCriterion {
 
 export interface Scorecard {
   kind: string;
-  score: number;
-  grade: string;
+  /** Null when not one criterion could be evaluated - not the same as zero. */
+  score: number | null;
+  /** Null alongside a null score: an unscored card has no grade, not an "E". */
+  grade: string | null;
   fields_evaluated: number;
   fields_missing: number;
   disqualified: boolean;

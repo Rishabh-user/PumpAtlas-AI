@@ -12,6 +12,7 @@ The payload shapes here are taken from a real record (ABB Pte Ltd), headings inc
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
@@ -482,3 +483,96 @@ class TestWhatTheClientStatedCannotBeOverwrittenByAWebPage:
         # rows would otherwise satisfy the check on their own.
         assert 'Vendor.extra.op("?")("data_owner")' in source
         assert inspect is not None
+
+
+class TestProvenanceLoadsInOneQueryNotPerVendor:
+    """1,684 round trips to a database 300ms away is nine minutes of waiting.
+
+    The second half of the same pass already loads in bulk and says why; the first half
+    asked per vendor. The answer has to be identical either way, or the optimisation is
+    a behaviour change wearing a performance costume.
+    """
+
+    def _db(self, rows, counter=None):
+        class _Rows:
+            def all(_self):
+                if counter is not None:
+                    counter.append(1)
+                return rows
+
+        class _Db:
+            def execute(_self, *_a, **_k):
+                return _Rows()
+
+        return _Db()
+
+    def test_the_batch_loader_groups_fields_by_vendor(self):
+        a, b = uuid.uuid4(), uuid.uuid4()
+        db = self._db([(a, "country"), (a, "hq_city"), (b, "name")])
+        held = client_records.load_field_provenance(db, [a, b])
+        assert held == {a: {"country", "hq_city"}, b: {"name"}}
+
+    def test_an_empty_batch_asks_nothing(self):
+        queries: list = []
+        db = self._db([], queries)
+        assert client_records.load_field_provenance(db, []) == {}
+        assert queries == []
+
+    def test_a_vendor_with_no_rows_is_simply_absent(self):
+        """`.get(id, set())` has to cover it - 1,601 of 1,684 vendors are this case."""
+        held = client_records.load_field_provenance(self._db([]), [uuid.uuid4()])
+        assert held == {}
+
+    def test_preloading_gives_the_same_answer_as_asking_per_vendor(self, monkeypatch):
+        from app.models.enums import ConfidenceLevel
+        from app.services import provenance
+
+        monkeypatch.setattr(provenance, "apply_field", lambda *a, **k: True)
+
+        def fresh():
+            vendor = _vendor({"data_owner": "SP Energy", "source_documents": ["signed.pdf"]})
+            vendor.country = "SG"
+            vendor.hq_country = "SG"
+            vendor.confidence_level = ConfidenceLevel.VERIFIED
+            return vendor
+
+        asked = client_records.record_document_provenance(self._db([]), fresh())
+        preloaded = client_records.record_document_provenance(
+            self._db([]), fresh(), held={}
+        )
+        assert asked == preloaded >= 2
+
+    def test_a_preloaded_field_is_skipped_exactly_as_a_queried_one_is(self, monkeypatch):
+        from app.models.enums import ConfidenceLevel
+        from app.services import provenance
+
+        written: list[str] = []
+        monkeypatch.setattr(
+            provenance,
+            "apply_field",
+            lambda db, entity, field_name, *a, **k: written.append(field_name) or True,
+        )
+
+        vendor = _vendor({"data_owner": "SP Energy", "source_documents": ["signed.pdf"]})
+        vendor.country = "SG"
+        vendor.hq_country = "SG"
+        vendor.confidence_level = ConfidenceLevel.VERIFIED
+
+        client_records.record_document_provenance(
+            self._db([]), vendor, held={vendor.id: {"country"}}
+        )
+        assert "country" not in written
+        assert "hq_country" in written
+
+    def test_preloading_does_not_query_per_vendor(self, monkeypatch):
+        """The whole point: the per-vendor SELECT must not still be happening."""
+        from app.services import provenance
+
+        monkeypatch.setattr(provenance, "apply_field", lambda *a, **k: True)
+        queries: list = []
+        vendor = _vendor({"data_owner": "SP Energy", "source_documents": ["signed.pdf"]})
+        vendor.country = "SG"
+        client_records.record_document_provenance(
+            self._db([], queries), vendor, held={vendor.id: set()}
+        )
+        assert queries == []

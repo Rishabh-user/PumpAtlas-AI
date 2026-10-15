@@ -397,3 +397,81 @@ class TestAPlaceholderIsAskedADifferentQuestion:
         assert "unspecified" not in objective.lower()
         assert all("unspecified" not in query.lower() for query in queries)
         assert "Bornerman" in objective
+
+
+class TestWhatTheWebCanBeAskedFor:
+    """Which records a datasheet hunt can succeed against.
+
+    This decides whether money is spent. `pending_pumps` recommended a datasheet hunt
+    for 93 of 160 records that have no datasheet to find, because it modelled two states
+    when there are four. Each failed hunt is a web search plus a model call per page.
+    """
+
+    def test_an_approved_suppliers_line_is_not_a_product(self):
+        """It says a vendor may supply a category on a project. No such pump exists."""
+        for code in (
+            "ONGC KG-DWN-98/2 approved - Process Pumps",
+            "ONGC KG-DWN-98/2 approved - Sea Water Injection Pumps",
+            "Kikeh approved - FIRE WATER PUMP",
+            "Kikeh approved - WATER INJECTION PUMP",
+        ):
+            assert designations.is_scope_entry(code) is True, code
+            assert designations.searchability(code) is designations.Searchability.SCOPE_ENTRY
+            assert designations.searchability(code).enrichable is False
+
+    def test_a_product_whose_name_merely_contains_approved_is_still_a_product(self):
+        """The shape is `approved -`, not the word anywhere in the string."""
+        for code in ("Approved Series 400", "API 610 approved BB2 pump"):
+            assert designations.is_scope_entry(code) is False, code
+
+    def test_a_resolver_placeholder_is_recognised(self):
+        code = "Bornerman unspecified line (unspecified variant)"
+        assert designations.searchability(code) is designations.Searchability.PLACEHOLDER
+        assert designations.searchability(code).enrichable is False
+
+    def test_a_bare_type_code_is_recognised(self):
+        for code in ("OH6", "VS1", "BB2", "API 675"):
+            assert designations.searchability(code) is designations.Searchability.TYPE_CODE, code
+
+    def test_a_real_designation_is_worth_searching_for(self):
+        for code in (
+            "ETL (close coupled OH5)",
+            "EAP/EAPK series",
+            "BP API 610 BB5",
+            "PWI-BB OH3",
+            "MSD",
+        ):
+            assert designations.searchability(code) is designations.Searchability.PRODUCT, code
+            assert designations.searchability(code).enrichable is True
+
+    def test_a_placeholder_wins_over_a_scope_entry(self):
+        """Order matters where a name could read as either."""
+        code = "Acme unspecified line approved - Process Pumps"
+        assert designations.searchability(code) is designations.Searchability.PLACEHOLDER
+
+    def test_every_kind_says_what_to_do_about_it(self):
+        """A classification nobody can act on is just a label."""
+        for kind in designations.Searchability:
+            assert kind.action.strip()
+        assert "Find datasheet" in designations.Searchability.PRODUCT.action
+        assert "003" in designations.Searchability.SCOPE_ENTRY.action
+
+    def test_exactly_one_kind_is_enrichable(self):
+        enrichable = [k for k in designations.Searchability if k.enrichable]
+        assert enrichable == [designations.Searchability.PRODUCT]
+
+    def test_an_empty_designation_is_not_called_a_product(self):
+        """A missing name names no product, so there is nothing to search for.
+
+        Otherwise it falls through to PRODUCT and the enrichment script searches for
+        "<vendor> " - a query with no subject, paid for like any other.
+        """
+        for code in ("", "   ", None):
+            assert designations.searchability(code) is designations.Searchability.PLACEHOLDER
+            assert designations.searchability(code).enrichable is False
+
+    def test_the_older_placeholder_helper_still_answers(self):
+        """Callers import it from `promotion`; there is now one definition behind both."""
+        code = "Bornerman unspecified line (unspecified variant)"
+        assert promotion.is_placeholder_designation(code) is True
+        assert designations.is_placeholder(code) is True

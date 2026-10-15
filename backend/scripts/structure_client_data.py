@@ -69,9 +69,13 @@ def main() -> int:
         # provenance is VERIFIED, and with no provenance rows at all there was nothing
         # for that guard to read. A client's signed country could have been replaced by
         # whatever a web page said.
+        # One query for the batch rather than one per vendor. The per-vendor version was
+        # 1,684 round trips to a database 300ms away - about nine minutes of waiting, on
+        # a pass whose own second half already loads in bulk for exactly this reason.
         traced = 0
+        prior = client_records.load_field_provenance(db, [vendor.id for vendor in vendors])
         for vendor in vendors:
-            traced += client_records.record_document_provenance(db, vendor)
+            traced += client_records.record_document_provenance(db, vendor, held=prior)
         print(f"\nprovenance written for {traced} field(s) across the imported records")
 
         if not ready:

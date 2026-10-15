@@ -11,6 +11,7 @@ from ipaddress import ip_address as parse_ip
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.core.deps import Principal
@@ -55,12 +56,27 @@ def _jsonable(value: Any) -> Any:
 
 
 def snapshot(obj: Any) -> dict[str, Any]:
-    """Column values of an ORM row, minus secrets."""
-    table = obj.__table__
+    """Column values of an ORM row, minus secrets and minus anything not loaded.
+
+    Reads only what the instance already holds. Touching an attribute that is not
+    loaded makes SQLAlchemy go and fetch it, and a snapshot asking for every column by
+    name turns that into one query per deferred column per row - on top of which, a
+    column the database does not have yet raises `UndefinedColumn` and takes the whole
+    write down with it.
+
+    That is not hypothetical: `vendors` carries six columns that migration 003 adds,
+    mapped `deferred` precisely so an ordinary load keeps working before the migration
+    runs. This function forced each one and killed `repair_vendor_data` on the first
+    record it tried to audit.
+
+    A snapshot of what is in memory is also the more honest artefact: it records the
+    state the caller acted on, not a fresher one read back mid-write.
+    """
+    unloaded = sa_inspect(obj).unloaded
     return {
         column.name: _jsonable(getattr(obj, column.name, None))
-        for column in table.columns
-        if column.name not in SENSITIVE_FIELDS
+        for column in obj.__table__.columns
+        if column.name not in SENSITIVE_FIELDS and column.key not in unloaded
     }
 
 

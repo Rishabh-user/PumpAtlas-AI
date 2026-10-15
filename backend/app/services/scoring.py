@@ -56,11 +56,29 @@ class Criterion:
 
 @dataclass
 class Scorecard:
+    """One dimension's verdict, or the honest absence of one.
+
+    ``score`` is ``None`` when not a single criterion could be evaluated. That is a
+    different statement from a low score, and conflating the two was actively
+    misleading: a pump whose datasheet nobody has read yet was scoring 0.0 and grading
+    E on commercial fit and delivery risk, which reads as "cheap rubbish that will
+    arrive late" rather than "nobody has looked". Only 4 of 160 models carry commercial
+    specs, so that was the normal case, not the edge case.
+
+    The module's rule is that missing data never scores as *good* data. Scoring it as
+    the worst possible data is a different error with the same root.
+    """
+
     kind: ScorecardKind
-    score: float
+    score: float | None
     criteria: list[Criterion] = field(default_factory=list)
     disqualified: bool = False
     disqualification_reason: str | None = None
+
+    @property
+    def scored(self) -> bool:
+        """Whether anything at all could be evaluated."""
+        return self.score is not None
 
     @property
     def fields_evaluated(self) -> int:
@@ -71,7 +89,15 @@ class Scorecard:
         return sum(1 for c in self.criteria if c.score is None)
 
     @property
-    def grade(self) -> str:
+    def grade(self) -> str | None:
+        """A letter, or None when there is nothing to grade.
+
+        Deliberately not "E". A caller that shows a letter must decide what to show for
+        an unscored card, and returning None is what forces that decision instead of
+        quietly printing the worst grade.
+        """
+        if self.score is None:
+            return None
         if self.score >= 85:
             return "A"
         if self.score >= 70:
@@ -118,7 +144,9 @@ def _aggregate(kind: ScorecardKind, criteria: list[Criterion]) -> Scorecard:
     scored = [c for c in criteria if c.score is not None]
     total_weight = sum(c.weight for c in scored)
     if not scored or total_weight <= 0:
-        return Scorecard(kind=kind, score=0.0, criteria=criteria)
+        # Not 0.0. There is no evidence either way, and a zero here would be read as a
+        # judgement - see the note on Scorecard.
+        return Scorecard(kind=kind, score=None, criteria=criteria)
     value = sum(c.score * c.weight for c in scored) / total_weight  # type: ignore[operator]
     return Scorecard(kind=kind, score=round(value, 3), criteria=criteria)
 
@@ -737,9 +765,23 @@ def score_all(
         ),
     }
     total_weight = sum(weights.values()) or 1.0
+    # A card that could not be scored contributes no opinion - it is passed through as
+    # an unevaluated criterion, so `_aggregate` renormalises the remaining weights
+    # instead of averaging in a zero.
+    #
+    # This matters more than it looks. Commercial fit and delivery risk carry 45% of the
+    # default weighting between them, and both are unscorable for almost every record
+    # today. Feeding them in as zeros meant the overall score was mostly a measure of
+    # what nobody had recorded yet: one real pump scored 41.0/D that way, and 74.6/B
+    # once the two empty cards stopped voting. Same pump, same evidence.
     overall_criteria = [
         Criterion(
-            name, weights[name] / total_weight, card.score, f"{name} scorecard grade {card.grade}"
+            name,
+            weights[name] / total_weight,
+            card.score,
+            f"{name} scorecard grade {card.grade}"
+            if card.scored
+            else f"{name} not scored; no criteria could be evaluated",
         )
         for name, card in cards.items()
     ]

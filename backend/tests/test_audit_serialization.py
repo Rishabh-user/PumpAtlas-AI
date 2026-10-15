@@ -86,3 +86,67 @@ def test_diff_is_json_safe_and_drops_updated_at():
     assert "updated_at" not in changes
     assert changes["rated_head_m"]["from"] == Decimal("138")
     json.dumps(_jsonable(changes))
+
+
+class TestSnapshotReadsOnlyWhatIsLoaded:
+    """A snapshot must not go back to the database for columns it was not handed.
+
+    `vendors` carries six columns that migration 003 adds, mapped `deferred` so an
+    ordinary load keeps working before the migration has run. `snapshot` asked for every
+    column by name, which made SQLAlchemy fetch each deferred one individually - and
+    against a database without them that is `UndefinedColumn`, which takes down the write
+    being audited rather than just the audit row. It killed `repair_vendor_data` on the
+    first record it touched.
+
+    Even where the columns do exist it is one query per deferred column per row.
+    """
+
+    def _entity(self, loaded: dict, unloaded: set):
+        from app.services import audit
+
+        class _Col:
+            def __init__(self, name):
+                self.name = name
+                self.key = name
+
+        class _Table:
+            columns = [_Col(n) for n in [*loaded, *unloaded]]
+
+        class _Entity:
+            __table__ = _Table()
+
+            def __getattr__(self, name):
+                if name in unloaded:
+                    raise AssertionError(f"snapshot touched the unloaded column {name!r}")
+                raise AttributeError(name)
+
+        entity = _Entity()
+        for key, value in loaded.items():
+            object.__setattr__(entity, key, value)
+        return entity, audit
+
+    def test_an_unloaded_column_is_left_alone(self, monkeypatch):
+        entity, audit = self._entity(
+            loaded={"id": "v1", "name": "Sulzer"},
+            unloaded={"address_line", "client_since"},
+        )
+        monkeypatch.setattr(
+            audit, "sa_inspect", lambda _o: type("S", (), {"unloaded": {"address_line", "client_since"}})()
+        )
+        out = audit.snapshot(entity)
+        assert out == {"id": "v1", "name": "Sulzer"}
+
+    def test_a_loaded_column_is_still_recorded(self, monkeypatch):
+        entity, audit = self._entity(loaded={"id": "v1", "name": "Sulzer"}, unloaded=set())
+        monkeypatch.setattr(audit, "sa_inspect", lambda _o: type("S", (), {"unloaded": set()})())
+        assert audit.snapshot(entity) == {"id": "v1", "name": "Sulzer"}
+
+    def test_secrets_are_still_excluded(self, monkeypatch):
+        from app.services.audit import SENSITIVE_FIELDS
+
+        secret = next(iter(SENSITIVE_FIELDS))
+        entity, audit = self._entity(loaded={"id": "v1", secret: "s3cret"}, unloaded=set())
+        monkeypatch.setattr(audit, "sa_inspect", lambda _o: type("S", (), {"unloaded": set()})())
+        out = audit.snapshot(entity)
+        assert secret not in out
+        assert out == {"id": "v1"}

@@ -365,12 +365,28 @@ def parse_vendor_master(path: str) -> list[Row]:
     return rows
 
 
+def _is_lock_file(name: str) -> bool:
+    """Excel's owner file for a workbook that is currently open.
+
+    Word and Excel drop a `~$Name.xlsx` beside the file being edited. It is a few
+    hundred bytes of owner metadata, not a workbook, and it is locked for exclusive
+    access - so a glob that picks it up dies with `PermissionError` on a file nobody
+    meant to read. Reading the client's documents should not depend on whether someone
+    happens to have one open at the time.
+    """
+    return name.startswith("~$")
+
+
 def parse_all(directory: str) -> list[Row]:
     rows: list[Row] = []
     for path in sorted(glob.glob(os.path.join(directory, "*.pdf"))):
+        if _is_lock_file(os.path.basename(path)):
+            continue
         rows += parse_signed_list(path)
     for path in sorted(glob.glob(os.path.join(directory, "*.[xX][lL][sS][xX]"))):
         name = os.path.basename(path)
+        if _is_lock_file(name):
+            continue
         rows += parse_package_list(path) if "Kikeh" in name else parse_vendor_master(path)
     return rows
 

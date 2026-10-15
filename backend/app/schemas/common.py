@@ -81,9 +81,11 @@ class FieldFlag(ORMModel):
 
 
 class ScorecardOut(BaseModel):
+    #: Null when not one criterion could be evaluated - which is not the same as zero,
+    #: and must not be rendered as a grade. `fields_missing` says how much is absent.
     kind: str
-    score: float
-    grade: str
+    score: float | None = None
+    grade: str | None = None
     fields_evaluated: int
     fields_missing: int
     disqualified: bool = False

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 
 #: API 610 configuration codes. OH = overhung, BB = between bearings, VS = vertically
 #: suspended; the number is the arrangement within the family.
@@ -255,3 +256,92 @@ def product_name(raw: str | None) -> str:
 
 def is_category_only(raw: str | None) -> bool:
     return classify(raw).is_category_only
+
+
+# === What the web can be asked for ==========================================
+#
+# Three of the four kinds below have no datasheet to find, and asking for one costs a
+# search plus a model call per page read and returns nothing. `pending_pumps` was
+# recommending exactly that for 78 of 160 records.
+
+#: Names the resolver invented because a page named a manufacturer and no product.
+PLACEHOLDER_MARKERS = ("unspecified line", "unspecified variant")
+
+#: "ONGC KG-DWN-98/2 approved - Process Pumps", "Kikeh approved - FIRE WATER PUMP".
+#:
+#: A line off an approved-suppliers list: this vendor may supply this *category* on this
+#: project. It is an approval, not a product - there is no "Process Pumps" to find a
+#: datasheet for - and 65 of 164 pump model records in this database are one. They exist
+#: as pump models only because the importer had nowhere else to put them; migration 003's
+#: `vendor_approvals` is where they belong.
+_SCOPE_ENTRY = re.compile(r"\bapprov(?:ed|al)\s*[-\u2013\u2014:]\s*\S", re.IGNORECASE)
+
+
+class Searchability(str, Enum):
+    """Whether a datasheet hunt against this designation can succeed."""
+
+    #: A real designation. A datasheet may exist, so enrichment is worth its cost.
+    PRODUCT = "product"
+    #: A category on an approved-suppliers list. No product, no datasheet, ever.
+    SCOPE_ENTRY = "scope_entry"
+    #: Invented by the resolver. Ask what the manufacturer sells instead.
+    PLACEHOLDER = "placeholder"
+    #: A bare API 610 type code - "OH6", "VS1". A configuration, not a model.
+    TYPE_CODE = "type_code"
+
+    @property
+    def enrichable(self) -> bool:
+        return self is Searchability.PRODUCT
+
+    @property
+    def action(self) -> str:
+        """What actually moves this record forward."""
+        return {
+            Searchability.PRODUCT: "POST /pump-models/{id}/enrich, or the Find datasheet button",
+            Searchability.SCOPE_ENTRY: (
+                "Not a product. Apply migration 003 and run "
+                "`scripts.structure_client_data --commit` to hold this as a vendor "
+                "approval instead of a hollow pump model."
+            ),
+            Searchability.PLACEHOLDER: (
+                "No designation to search for. Run a pump discovery seeded with the "
+                "manufacturer's name to find what they actually sell."
+            ),
+            Searchability.TYPE_CODE: (
+                "A pump type, not a model. Run `scripts.flag_category_models --commit` "
+                "and `scripts.clear_category_candidates --commit`."
+            ),
+        }[self]
+
+
+def is_placeholder(raw: str | None) -> bool:
+    """Whether this name was invented by the resolver rather than read off a page."""
+    text = (raw or "").lower()
+    return any(marker in text for marker in PLACEHOLDER_MARKERS)
+
+
+def is_scope_entry(raw: str | None) -> bool:
+    """Whether this is an approved-suppliers line rather than a product."""
+    return bool(_SCOPE_ENTRY.search(raw or ""))
+
+
+def searchability(raw: str | None) -> Searchability:
+    """What kind of thing this designation names, and so what can be done with it.
+
+    Order matters. A placeholder is checked first because the resolver's invented names
+    are unambiguous; a scope entry next, because "ONGC KG-DWN-98/2 approved - Process
+    Pumps" parses as product words ("ONGC", "KG-DWN-98") and would otherwise pass as a
+    real designation - which is exactly how 65 records ended up queued for a datasheet
+    hunt that cannot succeed.
+    """
+    if not (raw or "").strip():
+        # No name at all names no product. Falling through to PRODUCT would send the
+        # enrichment script hunting for "<vendor> " - a search with no subject.
+        return Searchability.PLACEHOLDER
+    if is_placeholder(raw):
+        return Searchability.PLACEHOLDER
+    if is_scope_entry(raw):
+        return Searchability.SCOPE_ENTRY
+    if is_category_only(raw):
+        return Searchability.TYPE_CODE
+    return Searchability.PRODUCT
