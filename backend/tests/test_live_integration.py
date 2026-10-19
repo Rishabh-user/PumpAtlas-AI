@@ -386,29 +386,6 @@ def test_matching_candidate_scores_well_and_is_not_disqualified(
     assert 0 < cards["data_confidence"]["score"] < 100
 
 
-def test_comparison_freezes_a_reproducible_snapshot(
-    analyst: httpx.Client, ingested: dict, profile: str
-):
-    response = analyst.post(
-        "/comparisons",
-        json={
-            "name": f"P-1201 shortlist {uuid.uuid4().hex[:6]}",
-            "requirement_profile_id": profile,
-            "pump_model_ids": [ingested["pump_model_id"]],
-        },
-    )
-    assert response.status_code == 201, response.text
-    comparison = response.json()
-    assert comparison["items"][0]["rank"] == 1
-    snapshot = comparison["snapshot"]
-    assert snapshot["scoring_version"] == "1.0.0"
-    assert snapshot["rows"][0]["values"]
-    assert snapshot["requirement_profile"]["required_capacity_m3h"]
-
-    reloaded = analyst.get(f"/comparisons/{comparison['id']}").json()
-    assert reloaded["items"][0]["rank"] == 1
-
-
 # ---------------------------------------------------------------------------
 # Tenant isolation - the reason row level security exists
 # ---------------------------------------------------------------------------

@@ -39,22 +39,28 @@ import type { ChatAnswer, ChatContext, ChatExample } from "@/types/api";
  * the same questions — see `ASK_SCREEN` in the backend. These exist so a
  * failed context call yields a usable screen rather than an empty one.
  */
+/** Only reached if the context call fails; the real list comes from the API, chosen
+ *  against what the catalogue can actually answer. */
 const FALLBACK_EXAMPLES: ChatExample[] = [
   {
-    label: "Sulzer multistage pumps",
-    query: "Which Sulzer multistage pumps do we hold and what is their rated head?",
+    mode: "record",
+    label: "Suppliers in Singapore",
+    query: "Which suppliers do we hold in Singapore, and how many are approved?",
   },
   {
-    label: "API 675 metering pumps",
-    query: "Do we have any API 675 metering pumps for chemical injection?",
+    mode: "record",
+    label: "OH2 overhung pumps",
+    query: "Which API 610 OH2 pump models do we hold, and who makes them?",
   },
   {
-    label: "BB3 barrel pumps",
-    query: "Who makes BB3 barrel pumps for crude export duty?",
+    mode: "web",
+    label: "Barrel pumps for crude export",
+    query: "Who makes API 610 BB5 barrel pumps suitable for crude export duty?",
   },
   {
-    label: "NACE MR0175 for sour service",
-    query: "What NACE MR0175 compliant pumps are recorded for sour service?",
+    mode: "web",
+    label: "Sour service compliance",
+    query: "Which pump manufacturers state NACE MR0175 compliance for sour service, and where do they say it?",
   },
 ];
 
@@ -315,23 +321,48 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
                   {context?.lede ??
                     "Answers are built from the records this platform holds. Every claim is marked with where it came from — [R1] for a held record, [W1] for a web page."}
                 </p>
-                <div className="mx-auto mt-5 grid max-w-2xl gap-1.5 sm:grid-cols-2">
-                  {examples.map((example) => (
-                    <button
-                      key={example.query}
-                      type="button"
-                      onClick={() => void ask(example.query)}
-                      disabled={asking}
-                      className="rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 disabled:opacity-50"
-                    >
-                      <span className="block text-2xs font-medium text-foreground">
-                        {example.label}
-                      </span>
-                      <span className="mt-0.5 block line-clamp-2 text-2xs text-muted-foreground">
-                        {example.query}
-                      </span>
-                    </button>
-                  ))}
+                {/* Grouped, because the two kinds of question behave differently and
+                  * the difference is not obvious until you have asked a few. A
+                  * question about what we hold is answered from the index and cites
+                  * [R1]; one the record cannot answer goes to the web and cites [W1].
+                  * Asking the web for a price still returns nothing - nobody
+                  * publishes one - and seeing the groups apart makes that legible. */}
+                <div className="mx-auto mt-5 max-w-2xl space-y-4 text-left">
+                  {(
+                    [
+                      ["record", "From your records", "Answered from the 1,684 suppliers and 160 models held here."],
+                      ["web", "From the web", "The record cannot answer these, so the search provider reads pages for them."],
+                    ] as const
+                  ).map(([mode, heading, lede]) => {
+                    const group = examples.filter(
+                      (example) => (example.mode ?? "record") === mode,
+                    );
+                    if (!group.length) return null;
+                    return (
+                      <div key={mode}>
+                        <p className="label-xs text-foreground">{heading}</p>
+                        <p className="mt-0.5 text-2xs text-muted-foreground">{lede}</p>
+                        <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+                          {group.map((example) => (
+                            <button
+                              key={example.query}
+                              type="button"
+                              onClick={() => void ask(example.query)}
+                              disabled={asking}
+                              className="rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 disabled:opacity-50"
+                            >
+                              <span className="block text-2xs font-medium text-foreground">
+                                {example.label}
+                              </span>
+                              <span className="mt-0.5 block line-clamp-2 text-2xs text-muted-foreground">
+                                {example.query}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}

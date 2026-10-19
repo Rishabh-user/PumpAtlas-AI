@@ -9,7 +9,7 @@ Two routes, and the split between them is the point:
   carry a verbatim quote from a page PumpAtlas fetched, and that is what capture does.
 
 So the chat can lead to new records, but only down the same path `/pumps` and `/vendors`
-use, with the same provenance gate and the same review queue.
+use, with the same provenance gate: a verbatim quote per field, stored unverified.
 """
 
 from __future__ import annotations

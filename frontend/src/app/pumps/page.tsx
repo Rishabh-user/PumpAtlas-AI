@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { ConfidenceChip } from "@/components/data/confidence";
 import { EmptyState, ErrorState } from "@/components/data/states";
 import { AiSearch } from "@/components/discovery/ai-search";
+import { PumpFillGaps } from "@/components/pumps/fill-gaps";
 import { AppShell } from "@/components/shell/app-shell";
 import { PageHeader } from "@/components/shell/page-header";
 import { Pager } from "@/components/data/pager";
@@ -21,6 +22,11 @@ import {
 } from "@/components/ui/table";
 import { hrefToString } from "@/lib/href";
 import { ApiError, apiFetch, hasSession } from "@/lib/api";
+import { Duty } from "@/components/data/duty";
+import {
+  SpecCoverageBar,
+  SpecCoverageLegend,
+} from "@/components/data/spec-coverage";
 import { money, num, ratioAsPct } from "@/lib/format";
 import { pumpTypeCode, standardLabel } from "@/lib/labels";
 import { loadShellContext } from "@/lib/session";
@@ -100,6 +106,12 @@ export default async function PumpsPage({
         lede="Every pump model held for your organisation, with its duty point, commercial terms and the source behind each value."
         actions={
           <>
+            {/* Two different operations. `AiSearch` discovers models the database has
+              * never heard of - hence the type, duty and country, which narrow what to
+              * look for. `PumpFillGaps` hunts the datasheet for models already on this
+              * page, so it asks nothing, and skips the 93 of 160 records that name a
+              * category rather than a product. */}
+            {results ? <PumpFillGaps rows={results.items} /> : null}
             <AiSearch kind="pump" />
             <form
               className="flex flex-wrap items-center gap-1.5"
@@ -170,6 +182,10 @@ export default async function PumpsPage({
                     <NumHead label="Price" unit="USD" />
                     <NumHead label="Lead" unit="weeks" />
                     <NumHead label="Complete" unit="%" />
+                    <TableHead className="w-[7.5rem]">
+                      <span className="block">Recorded</span>
+                      <SpecCoverageLegend className="mt-0.5" />
+                    </TableHead>
                     <TableHead>Confidence</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -218,17 +234,26 @@ export default async function PumpsPage({
                         </span>
                       </TableCell>
 
+                      {/* The duty columns fall back to the model family's envelope
+                        * when there is no single rated figure, which is the normal
+                        * case for a model sold in dozens of sizes. */}
                       <TableCell className="figure text-right">
-                        {num(row.rated_capacity_m3h, { decimals: 1 })}
+                        <Duty
+                          envelope={row.duty_envelope?.capacity}
+                          decimals={0}
+                        />
                       </TableCell>
                       <TableCell className="figure text-right">
-                        {num(row.rated_head_m, { decimals: 1 })}
+                        <Duty envelope={row.duty_envelope?.head} decimals={0} />
                       </TableCell>
                       <TableCell className="figure text-right">
                         {num(row.npsh_required_m, { decimals: 1 })}
                       </TableCell>
                       <TableCell className="figure text-right">
-                        {num(row.hydraulic_efficiency_pct, { decimals: 1 })}
+                        <Duty
+                          envelope={row.duty_envelope?.efficiency}
+                          decimals={1}
+                        />
                       </TableCell>
                       <TableCell className="figure text-right">
                         {row.base_price_usd === null ||
@@ -241,6 +266,9 @@ export default async function PumpsPage({
                       </TableCell>
                       <TableCell className="figure text-right">
                         {ratioAsPct(row.data_completeness_pct)}
+                      </TableCell>
+                      <TableCell>
+                        <SpecCoverageBar coverage={row.spec_coverage} />
                       </TableCell>
                       <TableCell>
                         <ConfidenceChip level={row.confidence_level} />

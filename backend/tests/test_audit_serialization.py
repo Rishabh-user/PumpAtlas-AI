@@ -131,7 +131,11 @@ class TestSnapshotReadsOnlyWhatIsLoaded:
             unloaded={"address_line", "client_since"},
         )
         monkeypatch.setattr(
-            audit, "sa_inspect", lambda _o: type("S", (), {"unloaded": {"address_line", "client_since"}})()
+            audit,
+            "sa_inspect",
+            lambda _o: type(
+                "S", (), {"unloaded": {"address_line", "client_since"}}
+            )(),
         )
         out = audit.snapshot(entity)
         assert out == {"id": "v1", "name": "Sulzer"}

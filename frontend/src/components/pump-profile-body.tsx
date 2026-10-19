@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { ConfidenceChip } from "@/components/data/confidence";
 import { EmptyState, FieldRow } from "@/components/data/states";
+import { SpecPanelEditor } from "@/components/pumps/spec-panel-editor";
 import { isCurrencyCompanion, specValue } from "@/components/format-spec";
 import { ProvenanceDrawer } from "@/components/provenance-drawer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,11 +27,26 @@ const SPEC_GROUP_LABELS: Record<string, string> = {
   administrative: "Administrative & compliance",
 };
 
+/**
+ * Fields that state a range rather than a duty point, shown only when populated.
+ *
+ * A model family covers an envelope - "flow to 1,000 m3/h, head to 150 m" - and has no
+ * single rated figure until a size is chosen. 56 of 78 records hold a maximum capacity
+ * and 6 hold a rated one, so the panel that showed only the rated field reported
+ * "Not recorded" over data the record was holding.
+ */
+const ENVELOPE_FALLBACKS = new Set(["max_capacity_m3h", "max_head_m"]);
+
 /** The fields a reviewer looks at first. Everything else is available under the fold. */
 const HEADLINE_FIELDS: Record<string, string[]> = {
   technical: [
+    // Both the rated point and the envelope. A model sold in 45 sizes has no single
+    // rated capacity - its datasheet states "flow to 1,000 m3/h" - so showing only
+    // `rated_capacity_m3h` printed "Not recorded" over a record that holds the answer.
     "rated_capacity_m3h",
+    "max_capacity_m3h",
     "rated_head_m",
+    "max_head_m",
     "npsh_required_m",
     "hydraulic_efficiency_pct",
     "rated_power_kw",
@@ -141,6 +157,20 @@ const MODEL_ATTRIBUTE_FIELDS = [
   "project_reference",
 ] as const;
 
+/**
+ * Whether this value wants a line of its own.
+ *
+ * A duty point is three characters and belongs on the right of its label. A service
+ * list is sixty and does not: squeezed into the value column it wrapped into a ragged
+ * right-aligned block, crushed the label beside it into a stack of single letters,
+ * and - before `FieldRow` was taught to shrink - ran clean out of the card into the
+ * panel next door.
+ */
+function wantsOwnLine(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 2;
+  return typeof value === "string" && value.length > 32;
+}
+
 function present(record: Record<string, unknown>, field: string): boolean {
   const value = record[field];
   return (
@@ -185,6 +215,7 @@ function PumpAttributes({
           <FieldRow
             key={field}
             label={ATTRIBUTE_LABELS[field] ?? fieldLabel(field)}
+            stacked={wantsOwnLine(record[field])}
           >
             {specValue(field, record[field], record)}
           </FieldRow>
@@ -204,47 +235,91 @@ function PumpAttributes({
 
 function SpecPanels({
   specs,
+  specFields,
+  coverage,
   pump,
   pumpModel,
+  pumpModelId,
 }: {
   specs: PumpProfile["specs"];
+  specFields: PumpProfile["spec_fields"];
+  coverage: PumpProfile["spec_coverage"];
   pump: Record<string, unknown>;
   pumpModel: Record<string, unknown>;
+  pumpModelId: string;
 }) {
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
+    // `[&>*]:min-w-0` because a grid item's default `min-width: auto` lets a card
+    // overflow its own column rather than constrain what is inside it. That is how
+    // "Mo" from the Commercial panel ended up rendered inside the Technical one.
+    <div className="grid gap-4 lg:grid-cols-3 [&>*]:min-w-0">
       <PumpAttributes pump={pump} pumpModel={pumpModel} />
       {Object.entries(SPEC_GROUP_LABELS).map(([group, label]) => {
         const spec = specs[group];
+        // Only the columns that are pump data. Filtering on "not null" alone listed
+        // `id`, `created_at`, `pump_model_id`, `version` and `source_id` among the
+        // specifications and counted them towards the total it advertised.
+        const real = new Set(specFields[group] ?? []);
         const populated = spec
           ? Object.entries(spec).filter(
               ([field, value]) =>
+                real.has(field) &&
                 value !== null &&
                 value !== "" &&
                 !isCurrencyCompanion(field, spec),
             )
           : [];
+        const tracked = coverage[group]?.tracked ?? 0;
         return (
           <Card key={group}>
             <CardHeader>
               <CardTitle>{label}</CardTitle>
-              {spec ? (
+              {spec && tracked ? (
+                // "16 / 144", not "31". One number says nothing about how much of the
+                // group is still open, and the old one counted bookkeeping.
                 <span className="figure text-muted-foreground">
                   {populated.length}
+                  <span className="opacity-60"> / {tracked}</span>
                 </span>
               ) : null}
             </CardHeader>
             {!spec ? (
-              <EmptyState
-                title="Not recorded"
-                hint="Ingest a datasheet, or submit the data through the manual form."
-              />
+              <>
+                <EmptyState
+                  title="Not recorded"
+                  hint={
+                    group === "technical"
+                      ? "Find the datasheet from the web, or type the values in."
+                      : "A datasheet will not carry these — they come from a quotation."
+                  }
+                />
+                <SpecPanelEditor
+                  pumpModelId={pumpModelId}
+                  group={group}
+                  groupLabel={label}
+                  headlineFields={HEADLINE_FIELDS[group] ?? []}
+                  current={null}
+                  empty
+                />
+              </>
             ) : (
               <CardContent>
                 {(HEADLINE_FIELDS[group] ?? [])
                   .filter((field) => !isCurrencyCompanion(field, spec))
+                  // An envelope field earns its row only when it holds something.
+                  // Otherwise a record with neither would show "Rated capacity —"
+                  // and "Max capacity —" where one dash said it already.
+                  .filter(
+                    (field) =>
+                      !ENVELOPE_FALLBACKS.has(field) ||
+                      (spec[field] !== null && spec[field] !== undefined),
+                  )
                   .map((field) => (
-                    <FieldRow key={field} label={fieldLabel(field)}>
+                    <FieldRow
+                      key={field}
+                      label={fieldLabel(field)}
+                      stacked={wantsOwnLine(spec[field])}
+                    >
                       {specValue(field, spec[field], spec)}
                     </FieldRow>
                   ))}
@@ -252,11 +327,16 @@ function SpecPanels({
                     server and the toggle needs no JavaScript. */}
                 <details className="mt-2 border-t border-border pt-2">
                   <summary className="cursor-pointer text-2xs text-primary">
-                    All {populated.length} recorded fields
+                    All {populated.length} recorded field
+                    {populated.length === 1 ? "" : "s"}
                   </summary>
                   <div className="mt-1">
                     {populated.map(([field, value]) => (
-                      <FieldRow key={field} label={fieldLabel(field)}>
+                      <FieldRow
+                        key={field}
+                        label={fieldLabel(field)}
+                        stacked={wantsOwnLine(value)}
+                      >
                         {specValue(field, value, spec)}
                       </FieldRow>
                     ))}
@@ -264,6 +344,15 @@ function SpecPanels({
                 </details>
               </CardContent>
             )}
+            {spec ? (
+              <SpecPanelEditor
+                pumpModelId={pumpModelId}
+                group={group}
+                groupLabel={label}
+                headlineFields={HEADLINE_FIELDS[group] ?? []}
+                current={spec}
+              />
+            ) : null}
           </Card>
         );
       })}
@@ -420,7 +509,10 @@ export function PumpProfileBody({
   return (
     <>
       <SpecPanels
+        pumpModelId={pumpModelId}
         specs={profile.specs}
+        specFields={profile.spec_fields ?? {}}
+        coverage={profile.spec_coverage ?? {}}
         pump={profile.pump}
         pumpModel={profile.pump_model}
       />

@@ -7,6 +7,7 @@ import { EmptyState, ErrorState } from "@/components/data/states";
 import { AppShell } from "@/components/shell/app-shell";
 import { PageHeader } from "@/components/shell/page-header";
 import { AiSearch } from "@/components/discovery/ai-search";
+import { VendorFillGaps } from "@/components/vendors/fill-gaps";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -156,6 +157,12 @@ export default async function VendorsPage({
         lede="Manufacturers, packagers and distributors, with qualification status and delivery track record."
         actions={
           <>
+            {/* Two different operations, repeatedly confused for one another.
+              * `AiSearch` discovers companies the database has never heard of - hence
+              * the pump type, duty and country, which narrow what to go looking for.
+              * `FillGaps` reads the web for suppliers already on this page, which is
+              * why it asks nothing. */}
+            {vendors ? <VendorFillGaps vendors={vendors.items} /> : null}
             <AiSearch kind="vendor" />
             <form
               className="flex flex-wrap items-center gap-1.5"

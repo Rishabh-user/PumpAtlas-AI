@@ -37,7 +37,7 @@ export const VENDOR_KIND: DiscoveryKindConfig = {
   triggerLabel: "AI vendor search",
   title: "AI vendor search",
   blurb:
-    "Choose a duty and a country — or nothing at all — and a web search finds candidate companies. A reading model reads each page, decides whether it is an Oil & Gas pump supplier, and pulls out its legal entity, headquarters, standards and certifications. Nothing is stored until you approve it.",
+    "Choose a duty and a country — or nothing at all — and a web search finds candidate companies. A reading model reads each page, decides whether it is an Oil & Gas pump supplier, and pulls out its legal entity, headquarters, standards and certifications. What it finds is stored as it reads, flagged unverified, for you to confirm on the record.",
   noun: "supplier",
   nounPlural: "suppliers",
   emptyTitle: "No Oil & Gas pump suppliers found yet",
@@ -52,7 +52,7 @@ export const PUMP_KIND: DiscoveryKindConfig = {
   triggerLabel: "AI pump search",
   title: "AI pump search",
   blurb:
-    "A web search hunts for datasheets and performance curves; a reading model reads each one and pulls out the model's duty point, materials and commercial terms. Nothing is stored until you pick it.",
+    "A web search hunts for datasheets and performance curves; a reading model reads each one and pulls out the model's duty point, materials and commercial terms. What it finds is stored as it reads, flagged unverified; an existing record gains a new version rather than being replaced.",
   noun: "pump model",
   nounPlural: "pump models",
   emptyTitle: "No Oil & Gas pump models found yet",

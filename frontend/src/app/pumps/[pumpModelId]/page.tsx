@@ -1,15 +1,15 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import { PumpProfileBody } from "@/components/pump-profile-body";
 import { ConfidenceChip, SeverityChip } from "@/components/data/confidence";
+import { VerifyButton } from "@/components/data/verify-button";
 import { ScoreCard } from "@/components/data/scorecard";
+import { ExplainableScore } from "@/components/data/scorecard-explainer";
 import { ErrorState } from "@/components/data/states";
 import { AppShell } from "@/components/shell/app-shell";
 import { PageHeader } from "@/components/shell/page-header";
 import { PumpEnrichPanel } from "@/components/pumps/enrich-panel";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiError, apiFetch, hasSession } from "@/lib/api";
 import { text } from "@/lib/format";
@@ -112,45 +112,44 @@ export default async function PumpProfilePage({
           </>
         }
         actions={
-          <Button variant="outline" asChild>
-            <Link href={`/compare?models=${pumpModelId}`}>
-              Add to comparison
-            </Link>
-          </Button>
+          /* AI findings land on the record unverified. This is where a person says
+           * they have checked them, which is what stops the next run rewriting them. */
+          <VerifyButton
+            endpoint={`/pump-models/${pumpModelId}/verify`}
+            verified={model.verification_status === "verified"}
+          />
         }
       />
 
       <div className="space-y-4">
         <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+          {/* Each card opens its own arithmetic. A number somebody has to defend in a
+            * tender review needs to show what it was computed from — which criteria
+            * were answerable, what each one read, and what recording the rest would
+            * change. */}
           {profile.scorecards
             .filter((card) => card.kind !== "overall")
             .map((card) => (
-              <ScoreCard
-                key={card.kind}
-                label={humanise(card.kind)}
-                score={card.score}
-                grade={card.grade}
-                missing={card.fields_missing}
-              />
+              <ExplainableScore key={card.kind} card={card}>
+                <ScoreCard
+                  label={humanise(card.kind)}
+                  score={card.score}
+                  grade={card.grade}
+                  missing={card.fields_missing}
+                />
+              </ExplainableScore>
             ))}
           {overall ? (
-            <ScoreCard
-              label="Overall"
-              score={overall.score}
-              grade={overall.grade}
-              missing={overall.fields_missing}
-            />
+            <ExplainableScore card={overall}>
+              <ScoreCard
+                label="Overall"
+                score={overall.score}
+                grade={overall.grade}
+                missing={overall.fields_missing}
+              />
+            </ExplainableScore>
           ) : null}
         </div>
-
-        {/* The specification panels below are empty on most records because the page a
-          * model was discovered from named the product and said nothing about its duty
-          * point or its commercial terms. This is how a person fills that in. */}
-        <PumpEnrichPanel
-          pumpModelId={pumpModelId}
-          vendorName={text(vendor?.name)}
-          modelCode={text(model.model_code)}
-        />
 
         {overall?.disqualified ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/[0.07] px-3 py-2.5">
@@ -193,6 +192,21 @@ export default async function PumpProfilePage({
         ) : null}
 
         <PumpProfileBody profile={profile} pumpModelId={pumpModelId} />
+
+        {/* Below the record, not above it. The specification panels are empty on most
+          * models because the page one was discovered from named the product and said
+          * nothing about its duty point — but the first thing a page shows should be
+          * what is known, not an offer to go and look. */}
+        <PumpEnrichPanel
+          pumpModelId={pumpModelId}
+          vendorName={text(vendor?.name)}
+          modelCode={text(model.model_code)}
+          kind={
+            (profile.model_kind ?? "product") as Parameters<
+              typeof PumpEnrichPanel
+            >[0]["kind"]
+          }
+        />
       </div>
     </AppShell>
   );

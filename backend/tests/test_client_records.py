@@ -308,19 +308,53 @@ class TestTheListEndpointSurvivesAnUnmigratedDatabase:
 
         assert client_records.MIGRATION_003_VENDOR_COLUMNS is MIGRATION_003_COLUMNS
 
-    def test_every_deferred_column_is_in_the_list(self):
-        """A column added later and left out of the set reintroduces the 500."""
+    def test_the_new_columns_are_mapped_only_once_the_migration_has_run(self):
+        """And when they are mapped, they are deferred.
+
+        `deferred` was never enough on its own. It governs SELECT, so an entity load
+        survived a database without these columns - but an INSERT names every column on
+        the table, so creating any vendor failed with `column "address_line" does not
+        exist`. That took out the discovery Store button, `POST /vendors` and every
+        sweep that found something worth keeping.
+
+        So the columns are declared conditionally, and the invariant is one of two
+        states: mapped and deferred, or not on the table at all. Anything between is
+        the 500 coming back.
+        """
         from sqlalchemy import inspect as sa_inspect
 
+        from app.core.config import settings
         from app.models.vendor import MIGRATION_003_COLUMNS, Vendor
 
         mapper = sa_inspect(Vendor)
-        deferred = {
-            name
-            for name, attribute in mapper.column_attrs.items()
-            if getattr(attribute, "deferred", False)
-        }
-        assert deferred == set(MIGRATION_003_COLUMNS)
+        mapped = set(mapper.column_attrs.keys()) & set(MIGRATION_003_COLUMNS)
+        on_table = set(Vendor.__table__.c.keys()) & set(MIGRATION_003_COLUMNS)
+
+        if settings.VENDOR_STRUCTURE_READY:
+            assert mapped == set(MIGRATION_003_COLUMNS)
+            deferred = {
+                name
+                for name, attribute in mapper.column_attrs.items()
+                if getattr(attribute, "deferred", False)
+            }
+            assert set(MIGRATION_003_COLUMNS) <= deferred
+        else:
+            # Not on the table is the whole point: the INSERT is built from the table.
+            assert not mapped
+            assert not on_table
+
+    def test_an_insert_never_names_a_column_the_database_may_lack(self):
+        """The statement, not the mapper, is what failed in production."""
+        from sqlalchemy import insert
+
+        from app.core.config import settings
+        from app.models.vendor import MIGRATION_003_COLUMNS, Vendor
+
+        if settings.VENDOR_STRUCTURE_READY:
+            return
+        statement = str(insert(Vendor).compile())
+        for name in MIGRATION_003_COLUMNS:
+            assert name not in statement, name
 
     def test_the_count_does_not_select_the_entity(self):
         import inspect

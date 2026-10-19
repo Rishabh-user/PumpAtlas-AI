@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowLeftRight, Search, SlidersHorizontal } from "lucide-react";
+import { Search, SlidersHorizontal } from "lucide-react";
 
 import { FilterRail } from "@/components/search/filter-rail";
 import { ActiveFilters, ResultsTable } from "@/components/search/results-table";
@@ -220,12 +219,6 @@ export function SearchWorkspace({
             <div className="flex items-center gap-1.5">
               <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
                 Clear
-              </Button>
-              <Button size="sm" asChild>
-                <Link href={"/compare?models=" + selected.join(",")}>
-                  <ArrowLeftRight />
-                  Compare
-                </Link>
               </Button>
             </div>
           </div>

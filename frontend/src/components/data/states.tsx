@@ -72,15 +72,41 @@ export function SuccessNote({ children }: { children: ReactNode }) {
 }
 
 /** Field list row. Label left, value right, hairline between. */
+/**
+ * A label and its value.
+ *
+ * `stacked` puts the value on its own line beneath the label, left aligned. That is
+ * the right shape for a value that is really a list - "Petrochemical processing,
+ * Chemical processing, Refinery offsites, Drainage" - which squeezed into a
+ * right-aligned column reads as a ragged block of text with no obvious left edge.
+ * The caller decides, because only the caller has the value before it is formatted.
+ */
 export function FieldRow({
   label,
   children,
   className,
+  stacked = false,
 }: {
   label: string;
   children: ReactNode;
   className?: string;
+  stacked?: boolean;
 }) {
+  if (stacked) {
+    return (
+      <div
+        className={cn(
+          "border-b border-border/60 py-1.5 last:border-0",
+          className,
+        )}
+      >
+        <span className="block text-2xs text-muted-foreground">{label}</span>
+        <span className="figure mt-0.5 block text-foreground [overflow-wrap:anywhere]">
+          {children}
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
@@ -88,10 +114,17 @@ export function FieldRow({
         className,
       )}
     >
-      <span className="min-w-0 shrink text-2xs text-muted-foreground">
+      {/* The label keeps a floor so a long value cannot squeeze it to a stack of
+          single letters, which is what "Service application" became. */}
+      <span className="min-w-[5.5rem] shrink text-2xs text-muted-foreground">
         {label}
       </span>
-      <span className="figure shrink-0 text-right text-foreground">
+      {/* `shrink-0` here was the bug. A value like "Petrochemical processing,
+          Chemical processing, Refinery offsites, Drainage" refused to shrink, so it
+          kept its full single-line width, crushed the label beside it and ran out of
+          the card entirely - which is why "Mo" from the Commercial panel appeared
+          inside the Technical one. It shrinks and wraps now. */}
+      <span className="figure min-w-0 text-right text-foreground [overflow-wrap:anywhere]">
         {children}
       </span>
     </div>

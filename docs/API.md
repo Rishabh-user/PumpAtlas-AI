@@ -63,7 +63,6 @@ written to `audit_logs`.
 | Duplicate review | `GET /quality/duplicates` |
 | Requirement profiles | `GET` / `POST /requirement-profiles` |
 | Score one candidate | `POST /pump-models/{id}/score` |
-| Build a comparison | `POST /comparisons` |
 | Compare vendors | `GET /vendor-comparison` |
 | Audit trail | `GET /audit-logs` |
 | Row snapshots | `GET /record-versions` |
@@ -91,9 +90,16 @@ are carried forward from the previous version, so a partial write is not a data-
 AI value lacked evidence, or because it would overwrite verified data, appears in the
 response rather than being silently dropped.
 
-**Route ordering.** Static segments are declared ahead of `{uuid}` siblings, and
-`GET /vendor-comparison` deliberately avoids `/comparisons/vendors`, which
-`/comparisons/{comparison_id}` would capture. A test asserts that no route is shadowed.
+**Route ordering.** Static segments are declared ahead of `{uuid}` siblings. A test
+asserts that no route is shadowed, and it has caught this twice: `GET /vendor-comparison`
+is spelled that way rather than `/comparisons/vendors` because a `{comparison_id}` route
+captured it, and `GET /spec-fields/{group}` was moved out from under `/pump-models/`
+for the same reason.
+
+**Removed.** `POST /comparisons` and the saved-comparison routes went with the compare
+page. `/requirement-profiles` stays - it supplies the weights every scorecard is
+computed against - as does `/pump-models/{id}/score`, which scores one candidate against
+a profile without storing anything.
 
 ## Example: search with filters
 

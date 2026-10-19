@@ -59,13 +59,15 @@ class DiscoveryStartRequest(BaseModel):
         ),
     )
     auto_store: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Write each confident candidate straight into the system of record instead "
-            "of queueing it for you to pick. This is how a sweep populates the database "
-            "unattended. Nothing bypasses the provenance gate: every field still needs a "
-            "verbatim evidence quote from the captured page, and a candidate whose "
-            "subject name is unusable is left for review rather than stored."
+            "Write each confident candidate straight into the system of record. Stored "
+            "values arrive flagged AI-extracted and unverified, and a person confirms "
+            "them on the record itself - there is no separate queue to work through. "
+            "Nothing bypasses the provenance gate: every field still needs a verbatim "
+            "evidence quote from the captured page, and a candidate whose subject name "
+            "is unusable is discarded rather than stored, because a record named '610' "
+            "is worse than no record."
         ),
     )
     min_confidence: float = Field(
@@ -73,9 +75,10 @@ class DiscoveryStartRequest(BaseModel):
         ge=0.5,
         le=1.0,
         description=(
-            "With `auto_store`, the confidence a candidate needs before it is written. "
-            "Below it the candidate waits in the review queue, which is where a doubtful "
-            "reading belongs."
+            "The confidence a candidate needs before it is written. Below it the "
+            "reading is discarded rather than stored: with no review queue to hold a "
+            "doubtful candidate, storing it would put a guess in the system of record "
+            "wearing the same unverified flag as a sound reading."
         ),
     )
     country: str | None = Field(

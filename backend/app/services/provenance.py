@@ -9,6 +9,7 @@ guarantees the platform can answer "where did this number come from?" for every 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -233,6 +234,55 @@ def _is_verified_field(db: Session, entity: Any, field_name: str) -> bool:
         )
     )
     return row == ConfidenceLevel.VERIFIED
+
+
+def mark_verified(
+    db: Session,
+    entity: Any,
+    field_names: Iterable[str],
+    *,
+    changed_by_user_id: Any = None,
+    tenant_id: Any = None,
+    note: str = "Confirmed by a reviewer",
+) -> int:
+    """Record that a person has confirmed the values this row already holds.
+
+    The point is the provenance row, not the column. `_is_verified_field` - the guard
+    that refuses an AI write over a human-confirmed value - reads
+    `field_provenance.confidence_level`. Setting `verification_status` on the record
+    does not touch that, so 65 pump models sat marked "verified" with **zero** verified
+    fields between them, and the endpoint that marked them promised "AI enrichment will
+    no longer overwrite these fields" while nothing stopped it.
+
+    Written as a new provenance entry rather than by editing the existing one: the AI
+    extraction that first found the value is a fact about the record's history, and a
+    person agreeing with it later is a second fact, not a correction of the first.
+    """
+    context = ProvenanceContext(
+        origin=ValueOrigin.MANUAL,
+        confidence_level=ConfidenceLevel.VERIFIED,
+        changed_by_user_id=changed_by_user_id,
+        tenant_id=tenant_id or getattr(entity, "tenant_id", None),
+    )
+    confirmed = 0
+    for field_name in field_names:
+        value = getattr(entity, field_name, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        apply_field(
+            db,
+            entity,
+            field_name,
+            value,
+            context,
+            evidence_quote=note,
+            # The value is already on the row; without this `apply_field` sees no
+            # change and records nothing, which is the whole failure being fixed.
+            record_unchanged=True,
+            overwrite_verified=True,
+        )
+        confirmed += 1
+    return confirmed
 
 
 def apply_fields(

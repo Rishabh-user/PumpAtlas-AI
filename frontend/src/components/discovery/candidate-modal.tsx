@@ -41,13 +41,17 @@ function confidenceTone(value: number | null): string {
 /**
  * One candidate, in full, with the decision attached.
  *
- * The list can only show a summary, and a summary is not enough to approve on: the thing
- * that makes a stored field trustworthy is the verbatim quote behind it, and a quote is
- * unreadable at list density. So the decision lives here, next to the evidence, rather
- * than behind a checkbox that says "3 selected".
+ * Most candidates never reach this screen any more: a run stores what it read with
+ * enough confidence, flagged unverified, and a person confirms it on the record. What
+ * arrives here is the remainder — readings the run would not vouch for on its own.
  *
- * Approving from here is the same call the list's Store button makes, which is the same
- * promotion path the /review queue uses. There is one way into the record.
+ * Which is exactly where a summary is not enough. The thing that makes a stored field
+ * trustworthy is the verbatim quote behind it, and a quote is unreadable at list
+ * density, so the decision lives next to the evidence rather than behind a checkbox
+ * that says "3 selected".
+ *
+ * Storing from here is the same call the list's button makes. There is one way into
+ * the record.
  */
 export function CandidateModal({
   candidate,
@@ -236,7 +240,7 @@ export function CandidateModal({
                 title={blocked ? candidate.blocked_reason ?? undefined : undefined}
               >
                 {busy ? <Loader2 className="animate-spin" /> : <Check />}
-                Approve
+                Store it
               </Button>
             </div>
           </div>
@@ -255,7 +259,7 @@ export function ReviewButton({ onClick }: { onClick: () => void }) {
       className="flex items-center gap-1 text-2xs text-primary hover:underline"
     >
       <Database className="size-3" />
-      Review and approve
+      Read the evidence
     </button>
   );
 }

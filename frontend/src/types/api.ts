@@ -22,6 +22,21 @@ export interface Page<T> {
 
 export interface SearchResultRow {
   pump_model_id: string;
+  /**
+   * What this row names: "product", "scope_entry", "placeholder" or "type_code".
+   * Only a product has a datasheet to look for.
+   */
+  model_kind?: string;
+  /** Recorded and tracked field counts per specification group, for this row. */
+  spec_coverage?: Record<string, { recorded: number; tracked: number }>;
+  /**
+   * The performance envelope, where a model family has one instead of a rated point.
+   * `search_index` carries only the `rated_*` figures, and most models have none.
+   */
+  duty_envelope?: Record<
+    string,
+    { rated: number | null; min: number | null; max: number | null }
+  >;
   pump_id: string;
   vendor_id: string;
   label: string;
@@ -165,6 +180,15 @@ export interface PumpProfile {
   pump: Record<string, unknown>;
   vendor: Record<string, unknown>;
   specs: Record<string, Record<string, unknown> | null>;
+  /**
+   * What this record names: only a product has a datasheet to look for.
+   * "product" | "scope_entry" | "placeholder" | "type_code"
+   */
+  model_kind?: string;
+  /** Which columns of each spec group are pump data rather than row bookkeeping. */
+  spec_fields: Record<string, string[]>;
+  /** Recorded and tracked counts per group — "16 of 144" rather than one 437-field %. */
+  spec_coverage: Record<string, { recorded: number; tracked: number }>;
   scorecards: Scorecard[];
   open_flags: QualityFlag[];
   provenance_summary: ProvenanceSummary;
@@ -510,6 +534,11 @@ export interface ChatAnswer {
 export interface ChatExample {
   label: string;
   query: string;
+  /**
+   * Where the answer mainly comes from. The chat consults the record and the web on
+   * every question; this says which one the question is really asking.
+   */
+  mode?: "record" | "web";
 }
 
 /**

@@ -120,6 +120,19 @@ class PumpProfile(ORMModel):
     specs: dict[str, Any] = Field(
         default_factory=dict, description="Current version of each spec group"
     )
+    #: What this record names: "product", "scope_entry", "placeholder" or "type_code".
+    #: Only a product has a datasheet to look for, and the page needs to know which it
+    #: is before offering to go and find one.
+    model_kind: str = "product"
+    #: The field names of each group that are actually pump data. Without it the page
+    #: listed the row's bookkeeping - `id`, `created_at`, `pump_model_id`, `version`,
+    #: `source_id` - among the specifications, and counted 13 of them towards the
+    #: "31 recorded fields" it advertised.
+    spec_fields: dict[str, list[str]] = Field(default_factory=dict)
+    #: Recorded and tracked field counts per group. One percentage against 437 fields
+    #: makes a well-populated datasheet record read as 6% and says nothing about which
+    #: part is missing; this says it per group.
+    spec_coverage: dict[str, dict[str, int]] = Field(default_factory=dict)
     scorecards: list[dict[str, Any]] = Field(default_factory=list)
     open_flags: list[dict[str, Any]] = Field(default_factory=list)
     provenance_summary: dict[str, Any] = Field(default_factory=dict)

@@ -22,15 +22,20 @@ filled is how a blank record ends up looking finished.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import ARRAY as SAArray
+from sqlalchemy import JSON as SAJson
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import String as SAString
+from sqlalchemy import Text, and_, case, cast, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models.pump import Pump, PumpModel
 from app.models.vendor import Vendor, VendorContact
-from app.schemas.specs import SPEC_FIELDS
+from app.schemas.specs import SPEC_FIELDS, SPEC_REGISTRY
 
 #: Columns that describe the row rather than the thing. Mirrors `chat.ROW_META_COLUMNS`:
 #: a spec row's own confidence and notes are bookkeeping, and counting them would give
@@ -203,6 +208,130 @@ def model_completeness(
             1 for name in spec_field_names(group) if is_recorded(getattr(spec, name, None))
         )
     return _ratio(recorded, MODEL_TRACKED)
+
+
+def model_coverage(
+    model: PumpModel, pump: Pump | None, specs: dict[str, Any]
+) -> dict[str, dict[str, int]]:
+    """Recorded and tracked field counts per group, rather than one number.
+
+    One figure against 437 fields makes every record look broken. A good datasheet
+    supplies around thirty fields and reads as 6% complete - while 60 commercial,
+    52 delivery and 55 operational fields sit in the denominator waiting for data that
+    only a quotation or a service history can provide. Measured against what a
+    datasheet can actually answer, the same record is closer to a fifth of the way
+    there, and the three empty groups say plainly that nobody has quoted it yet.
+
+    Returns `{group: {"recorded": n, "tracked": m}}` with an `attributes` entry for the
+    identity fields that belong to no spec group. The sum of `tracked` across every
+    entry is `MODEL_TRACKED`, so the single percentage is still derivable from this.
+    """
+    coverage: dict[str, dict[str, int]] = {}
+
+    attribute_recorded = sum(
+        1 for name in MODEL_ATTRIBUTE_FIELDS if is_recorded(getattr(model, name, None))
+    )
+    if pump is not None:
+        attribute_recorded += sum(
+            1 for name in PUMP_ATTRIBUTE_FIELDS if is_recorded(getattr(pump, name, None))
+        )
+    coverage["attributes"] = {
+        "recorded": attribute_recorded,
+        "tracked": len(MODEL_ATTRIBUTE_FIELDS) + len(PUMP_ATTRIBUTE_FIELDS),
+    }
+
+    for group in SPEC_FIELDS:
+        names = spec_field_names(group)
+        spec = specs.get(group)
+        recorded = (
+            0
+            if spec is None
+            else sum(1 for name in names if is_recorded(getattr(spec, name, None)))
+        )
+        coverage[group] = {"recorded": recorded, "tracked": len(names)}
+    return coverage
+
+
+def _recorded_in_sql(column: Any) -> Any:
+    """The SQL form of `is_recorded`, per column type.
+
+    These two have to agree. The list page and the profile page showing different
+    counts for the same record is the sort of thing nobody reports as a bug and
+    everybody quietly stops trusting.
+    """
+    # Checked by type, not by the rendered name. `Enum` subclasses `String`, so a name
+    # match sent `btrim()` at a Postgres enum column and the whole query failed with
+    # "function btrim(driver_type) does not exist".
+    if isinstance(column.type, SAArray):
+        return func.coalesce(func.cardinality(column), 0) > 0
+    if isinstance(column.type, SAEnum):
+        # An enum cannot hold an empty string, so presence is the whole question.
+        return column.is_not(None)
+    if isinstance(column.type, SAString):
+        return and_(column.is_not(None), func.btrim(column) != "")
+    if isinstance(column.type, SAJson):
+        # `is_recorded` calls an empty object or array empty, and these columns are
+        # created as `{}` rather than left null, so IS NOT NULL counts every one of
+        # them. `extra` on a technical spec row is the usual offender.
+        return and_(
+            column.is_not(None),
+            cast(column, Text).notin_(("{}", "[]", "null")),
+        )
+    return column.is_not(None)
+
+
+def coverage_for_models(
+    db: Session, pump_model_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, dict[str, int]]]:
+    """Per-group recorded counts for a page of models, in one round trip.
+
+    The list page showed a single percentage against 437 tracked fields, so a
+    well-documented pump read as 6% and sat indistinguishable from an empty row. Per
+    group it is legible - and the six groups cannot be counted one model at a time,
+    because that is 6 queries per row against a database 300ms away.
+
+    A `UNION ALL` across the six spec tables, each counting its own recorded columns,
+    answers the whole page at once. Groups with no current row are absent from the
+    result and filled in as zero by the caller.
+    """
+    tracked = {group: len(spec_field_names(group)) for group in SPEC_FIELDS}
+    base: dict[uuid.UUID, dict[str, dict[str, int]]] = {
+        model_id: {g: {"recorded": 0, "tracked": n} for g, n in tracked.items()}
+        for model_id in pump_model_ids
+    }
+    if not pump_model_ids:
+        return base
+
+    parts = []
+    for group, (sa_model, _, _) in SPEC_REGISTRY.items():
+        names = spec_field_names(group)
+        if not names:
+            continue
+        recorded = sum(
+            (
+                case((_recorded_in_sql(getattr(sa_model, name)), 1), else_=0)
+                for name in names
+                if hasattr(sa_model, name)
+            ),
+            literal(0),
+        )
+        parts.append(
+            select(
+                sa_model.pump_model_id.label("pump_model_id"),
+                literal(group).label("grp"),
+                recorded.label("recorded"),
+            ).where(
+                sa_model.is_current.is_(True),
+                sa_model.pump_model_id.in_(pump_model_ids),
+            )
+        )
+    if not parts:
+        return base
+
+    for model_id, group, recorded in db.execute(union_all(*parts)):
+        if model_id in base:
+            base[model_id][group]["recorded"] = int(recorded or 0)
+    return base
 
 
 def refresh_model(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -18,6 +19,7 @@ from app.models.enums import (
     ConfidenceLevel,
     ValueOrigin,
     VendorApprovalStatus,
+    VerificationStatus,
 )
 from app.models.pump import Pump, PumpModel
 from app.models.source import Source
@@ -35,6 +37,7 @@ from app.schemas.entities import (
 from app.services import (
     audit,
     client_records,
+    completeness,
     dedupe,
     discovery,
     dispatch,
@@ -527,7 +530,8 @@ def enrich_vendor(
     This asks the questions a procurement file needs answered - company profile and
     locations, API and ISO certifications, offshore and FPSO references, annual report -
     reads each page it finds, and applies what it can quote. Every value still carries a
-    verbatim quote and a source, exactly as the review queue would write it.
+    verbatim quote and a source, and arrives flagged unverified for a person to
+    confirm on the record.
     """
     vendor = _get_vendor(db, vendor_id)
 
@@ -911,3 +915,59 @@ def summarise_vendor(vendor_id: uuid.UUID, principal: CurrentPrincipal, db: DbSe
         "vendor_id": str(vendor.id),
         "detail": "Vendor summary is being generated from facts already in the database",
     }
+
+
+@router.post(
+    "/{vendor_id}/verify",
+    response_model=Message,
+    dependencies=[Depends(require("vendor", "approve"))],
+)
+def verify_vendor(
+    vendor_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    db: DbSession,
+    verification_method: str = Query(
+        default="document review", description="How the record was verified"
+    ),
+) -> Message:
+    """Mark a supplier record human-verified, and protect its fields from AI overwrite.
+
+    The counterpart of the pump endpoint, and it did not exist: a vendor enriched from
+    the web could be re-enriched and quietly rewritten, with no way for a person to say
+    "I have checked this one" and have the system honour it.
+
+    The protection is the provenance row, not the column. `provenance._is_verified_field`
+    refuses an AI write by reading `field_provenance.confidence_level`, so recording the
+    confirmation there is what actually stops the next run.
+    """
+    vendor = _get_vendor(db, vendor_id)
+    vendor.verification_status = VerificationStatus.VERIFIED
+    vendor.confidence_level = ConfidenceLevel.VERIFIED
+    vendor.last_verified_at = datetime.now(UTC)
+
+    confirmed = provenance.mark_verified(
+        db,
+        vendor,
+        completeness.VENDOR_FIELDS,
+        changed_by_user_id=principal.user_id,
+        tenant_id=vendor.tenant_id,
+        note=f"Confirmed by a reviewer ({verification_method})",
+    )
+
+    audit.record_audit(
+        db,
+        action=AuditAction.UPDATE,
+        principal=principal,
+        entity_type="vendors",
+        entity_id=vendor.id,
+        entity_label=vendor.name,
+        summary=f"Record verified ({verification_method})",
+        context={"verification_method": verification_method},
+    )
+    db.commit()
+    return Message(
+        detail=(
+            f"Record marked verified. {confirmed} field(s) are now protected from being "
+            "overwritten by AI enrichment."
+        )
+    )

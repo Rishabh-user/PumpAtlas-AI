@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import ARRAY as SAArray
+from sqlalchemy import Boolean as SABoolean
+from sqlalchemy import Date as SADate
+from sqlalchemy import DateTime as SADateTime
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import Float as SAFloat
+from sqlalchemy import Integer as SAInteger
+from sqlalchemy import Numeric as SANumeric
+from sqlalchemy import and_, func, or_, select
 
 from app.ai.parallel_search import pump_model_objective, vendor_range_objective
 from app.core import rate_limit
 from app.core.deps import CurrentPrincipal, DbSession, require
-from app.models.ai import DataQualityFlag
+from app.models.ai import DataQualityFlag, FieldProvenance
 from app.models.audit import RecordVersion
 from app.models.enums import AuditAction, ValueOrigin, VerificationStatus
 from app.models.pump import Pump, PumpModel
@@ -33,6 +42,7 @@ from app.services import (
     audit,
     client_records,
     comparison,
+    completeness,
     dedupe,
     designations,
     discovery,
@@ -447,6 +457,12 @@ def pump_profile(
         if vendor
         else {},
         specs=spec_payload,
+        model_kind=designations.searchability(model.model_code).value,
+        # The six rows are already loaded, so both of these cost no query.
+        spec_coverage=completeness.model_coverage(model, pump, specs),
+        spec_fields={
+            group: completeness.spec_field_names(group) for group in spec_payload
+        },
         scorecards=[
             {
                 "kind": card.kind.value,
@@ -546,6 +562,161 @@ def update_pump_model(
     db.commit()
     db.refresh(model)
     return model
+
+
+def _field_descriptor(name: str, column: Any) -> dict[str, Any]:
+    """Describe one writable spec field well enough to render an input for it.
+
+    Types come from the database column, not the write schema: the schemas declare an
+    enum-backed column as `str | None`, so reading them gives a free-text box where the
+    only accepted values are a fixed list. The column knows.
+
+    Derived rather than listed by hand, because a form that hardcodes sixty commercial
+    field names drifts from the schema the first time a column is added, and the drift
+    is silent - the field simply never appears.
+    """
+    kind = "text"
+    choices: list[str] | None = None
+    if column is not None:
+        column_type = column.type
+        if isinstance(column_type, SAEnum):
+            kind = "choice"
+            choices = list(column_type.enums or [])
+        elif isinstance(column_type, SABoolean):
+            kind = "boolean"
+        elif isinstance(column_type, SANumeric | SAInteger | SAFloat):
+            kind = "number"
+        elif isinstance(column_type, SADate | SADateTime):
+            kind = "date"
+        elif isinstance(column_type, SAArray):
+            kind = "list"
+
+    unit = None
+    for suffix, label in _UNIT_SUFFIXES.items():
+        if name.endswith(suffix):
+            unit = label
+            break
+
+    return {
+        "name": name,
+        "label": name.replace("_", " ").strip().capitalize(),
+        "type": kind,
+        "unit": unit,
+        "choices": choices,
+    }
+
+
+#: Units implied by a column's name, so the form can label an input without a lookup
+#: table that has to be kept in step with the schema.
+_UNIT_SUFFIXES = {
+    "_m3h": "m³/h",
+    "_kg": "kg",
+    "_mm": "mm",
+    "_kw": "kW",
+    "_rpm": "rpm",
+    "_pct": "%",
+    "_usd": "USD",
+    "_barg": "barg",
+    "_hours": "hours",
+    "_weeks": "weeks",
+    "_days": "days",
+    "_months": "months",
+    "_years": "years",
+    "_c": "°C",
+    "_m": "m",
+}
+
+
+# Deliberately not under `/pump-models/`: a static segment where the sibling route
+# expects a UUID is a shadowed route waiting to happen, and `test_api_surface` refuses
+# it on sight.
+@router.get(
+    "/pump-models/{pump_model_id}/changes",
+    dependencies=[Depends(require("pump", "read"))],
+)
+def recent_changes(
+    pump_model_id: uuid.UUID,
+    db: DbSession,
+    since: datetime | None = Query(
+        default=None,
+        description="Only values written at or after this moment. Defaults to the last hour.",
+    ),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> list[dict[str, Any]]:
+    """What was written to this model recently, and what each value replaced.
+
+    A discovery run would finish, report "4 pump models found, 4 stored", and leave the
+    page looking exactly as before - because the fields it wrote were not among the
+    fifteen the panel shows, so they landed behind the "all recorded fields"
+    disclosure. The run had worked; there was no way to see what it had done.
+
+    Every write already records its previous value, a verbatim quote and the page the
+    quote came from. This is that record, scoped to one model and one window of time.
+    """
+    _get_model(db, pump_model_id)
+    targets = records.provenance_targets_for_pump_model(db, pump_model_id)
+    if not targets:
+        return []
+    cutoff = since or (datetime.now(UTC) - timedelta(hours=1))
+
+    pairs = [
+        and_(FieldProvenance.entity_type == entity, FieldProvenance.entity_id == row_id)
+        for entity, row_id in targets
+    ]
+    rows = db.scalars(
+        select(FieldProvenance)
+        .where(or_(*pairs), FieldProvenance.created_at >= cutoff)
+        .order_by(FieldProvenance.created_at.desc())
+        .limit(limit)
+    ).all()
+
+    source_ids = {row.source_id for row in rows if row.source_id}
+    sources = (
+        {
+            source.id: source
+            for source in db.scalars(select(Source).where(Source.id.in_(source_ids))).all()
+        }
+        if source_ids
+        else {}
+    )
+
+    return [
+        {
+            "entity_type": row.entity_type,
+            "field_name": row.field_name,
+            "previous_value": row.previous_value_text,
+            "value": row.value_text,
+            "origin": str(row.value_origin.value if row.value_origin else ""),
+            "confidence_level": str(row.confidence_level.value if row.confidence_level else ""),
+            "evidence_quote": row.evidence_quote,
+            "source_title": getattr(sources.get(row.source_id), "title", None),
+            "source_url": getattr(sources.get(row.source_id), "source_url", None),
+            "recorded_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/spec-fields/{group}", dependencies=[Depends(require("pump", "read"))])
+def spec_fields(
+    group: str = Path(description=f"One of: {', '.join(SPEC_GROUPS)}"),
+) -> list[dict[str, Any]]:
+    """Every field this spec group accepts, and what kind of input each one needs.
+
+    The six specification panels told a reader to "submit the data through the manual
+    form" and no such form existed - nothing in the product ever called
+    `PUT /pump-models/{id}/specs/{group}`. For commercial, delivery, dimensional,
+    operational and administrative data that was the only possible route, because a
+    manufacturer's website states a duty point and never states a price or a lead time.
+    """
+    if group not in SPEC_REGISTRY:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown spec group '{group}'")
+    spec_cls, _, write_schema = SPEC_REGISTRY[group]
+    columns = spec_cls.__table__.c
+    return [
+        _field_descriptor(name, columns.get(name))
+        for name in write_schema.model_fields
+    ]
 
 
 @router.get(
@@ -785,10 +956,25 @@ def verify_pump_model(
     model.confidence_level = ConfidenceLevel.VERIFIED
     model.last_reviewed_at = datetime.now(UTC)
 
-    for spec in records.current_specs(db, pump_model_id).values():
-        if spec is not None:
-            spec.verification_status = VerificationStatus.VERIFIED
-            spec.confidence_level = ConfidenceLevel.VERIFIED
+    # The columns above are what the badges read. The provenance below is what the
+    # guard reads: `provenance._is_verified_field` refuses an AI write by looking at
+    # `field_provenance.confidence_level`, and nothing here used to write it - so 65
+    # records were badged verified while every field stayed overwritable.
+    note = f"Confirmed by a reviewer ({verification_method})"
+    confirmed = 0
+    for group, spec in records.current_specs(db, pump_model_id).items():
+        if spec is None:
+            continue
+        spec.verification_status = VerificationStatus.VERIFIED
+        spec.confidence_level = ConfidenceLevel.VERIFIED
+        confirmed += provenance.mark_verified(
+            db,
+            spec,
+            completeness.spec_field_names(group),
+            changed_by_user_id=principal.user_id,
+            tenant_id=model.tenant_id,
+            note=note,
+        )
 
     audit.record_audit(
         db,
@@ -803,7 +989,10 @@ def verify_pump_model(
     indexing.reindex_pump_model(db, model.id)
     db.commit()
     return Message(
-        detail="Record marked verified. AI enrichment will no longer overwrite these fields."
+        detail=(
+            f"Record marked verified. {confirmed} field(s) are now protected from being "
+            "overwritten by AI enrichment."
+        )
     )
 
 

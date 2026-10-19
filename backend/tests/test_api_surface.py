@@ -41,13 +41,16 @@ def test_core_module_routes_exist():
         "/api/v1/ingest/web-search",
         "/api/v1/ingest/manual",
         "/api/v1/ingest/batches",
-        "/api/v1/ai/review-queue",
-        "/api/v1/ai/suggestions",
+        # `/ai/review-queue` and `/ai/suggestions` went with the review page: AI
+        # findings are written straight to the record now, flagged unverified, and
+        # confirmed in place rather than queued.
         "/api/v1/ai/usage",
         "/api/v1/quality/dashboard",
         "/api/v1/quality/flags",
         "/api/v1/quality/duplicates",
-        "/api/v1/comparisons",
+        # `/comparisons` was removed with the compare page. `/vendor-comparison` and
+        # `/requirement-profiles` stay: the first is a separate vendor-level feature,
+        # the second supplies the weights every scorecard is computed against.
         "/api/v1/vendor-comparison",
         "/api/v1/requirement-profiles",
         "/api/v1/audit-logs",

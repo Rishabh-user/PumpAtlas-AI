@@ -8,6 +8,7 @@ import { ErrorState } from "@/components/data/states";
 import { VendorDetailPanels } from "@/components/vendor-detail-panels";
 import { AppShell } from "@/components/shell/app-shell";
 import { PageHeader } from "@/components/shell/page-header";
+import { VerifyButton } from "@/components/data/verify-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EnrichPanel } from "@/components/vendors/enrich-panel";
@@ -189,18 +190,27 @@ export default async function VendorProfilePage({
           </>
         }
         actions={
-          vendor.website ? (
-            <Button variant="outline" asChild>
-              <a
-                href={externalHref(String(vendor.website))}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <ExternalLink />
-                Vendor website
-              </a>
-            </Button>
-          ) : null
+          <div className="flex flex-wrap items-center gap-2">
+            {/* The counterpart of the pump page: enrichment writes onto the record
+              * unverified, and this is where a person confirms it and stops the next
+              * run rewriting what they confirmed. */}
+            <VerifyButton
+              endpoint={`/vendors/${vendorId}/verify`}
+              verified={vendor.verification_status === "verified"}
+            />
+            {vendor.website ? (
+              <Button variant="outline" asChild>
+                <a
+                  href={externalHref(String(vendor.website))}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  <ExternalLink />
+                  Vendor website
+                </a>
+              </Button>
+            ) : null}
+          </div>
         }
       />
 

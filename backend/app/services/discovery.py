@@ -115,8 +115,8 @@ class DiscoveryKind:
 
     A rule catches that where a prompt cannot. Pages ruled out here are recorded on the
     source with their reason, exactly as the ones Gemma rules out are, so they are
-    counted as screened out rather than arriving in the review queue as candidates that
-    can be looked at and never stored.
+    counted as screened out rather than arriving on the run as candidates that can be
+    looked at and never stored.
     """
 
     sweep_scopes: dict[str, Callable[..., list[Any]]] = field(default_factory=dict)
@@ -1140,8 +1140,9 @@ def _store_unattended(
 
     Two things keep this honest rather than a bulk import of whatever the web said:
 
-    * **The confidence bar.** Below it the candidate stays in the review queue, which is
-      where a doubtful reading belongs.
+    * **The confidence bar.** Below it the candidate is left undecided on its run,
+      which the AI search panel shows alongside the evidence that produced it. A
+      doubtful reading belongs next to the page it came from, not in the record.
     * **The provenance gate is unchanged.** Every field still needs a verbatim evidence
       quote from the captured page, and ``unattended=True`` additionally refuses a
       candidate whose subject name is unusable - a page about "BB3 pumps" would

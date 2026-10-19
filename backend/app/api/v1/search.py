@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -22,8 +23,10 @@ from app.models.enums import (
     VendorTier,
     VerificationStatus,
 )
+from app.models.specs import TechnicalSpec
 from app.schemas.common import Message
 from app.schemas.search import SearchRequest, SearchResponse, SimilarRequest
+from app.services import completeness, designations
 from app.services import search as search_service
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -32,6 +35,111 @@ router = APIRouter(prefix="/search", tags=["search"])
 def _to_filters(payload: SearchRequest) -> search_service.SearchFilters:
     data = payload.model_dump(exclude={"sort", "limit", "offset", "include_facets"})
     return search_service.SearchFilters(**data)
+
+
+def _model_id(raw: Any) -> uuid.UUID | None:
+    """A row's pump model id, however the index serialised it."""
+    if raw is None:
+        return None
+    if isinstance(raw, uuid.UUID):
+        return raw
+    try:
+        return uuid.UUID(str(raw))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _model_ids(items: list[dict]) -> list[uuid.UUID]:
+    seen = [_model_id(item.get("pump_model_id")) for item in items]
+    return [value for value in seen if value is not None]
+
+
+def _attach_model_kind(items: list[dict]) -> None:
+    """Say what each row names: a product, an approval line, a placeholder, a type code.
+
+    Costs no query - it reads `model_code`, which the index already carries. It is
+    attached rather than worked out in the browser because the classifier is the same
+    one the profile page and `scripts.pending_pumps` use, and a second copy in
+    TypeScript would drift the first time a new shape of junk designation turned up.
+
+    Only a product has a datasheet, so this is what tells the list which records a web
+    search can do anything for: 67 of 160, the rest being approved-suppliers lines,
+    resolver placeholders and bare API 610 type codes.
+    """
+    for item in items:
+        code = item.get("model_code")
+        if isinstance(code, str):
+            item["model_kind"] = designations.searchability(code).value
+
+
+def _attach_coverage(db: DbSession, items: list[dict]) -> None:
+    """Add `spec_coverage` to each row, in one round trip for the whole page.
+
+    Computed rather than indexed: putting it in `search_index` would mean a migration
+    and a reindex, and would go stale the moment a spec was written. One extra query
+    per page is the cheaper trade.
+    """
+    ids = _model_ids(items)
+    if not ids:
+        return
+    coverage = completeness.coverage_for_models(db, ids)
+    for row in items:
+        key = _model_id(row.get("pump_model_id"))
+        if key is not None and key in coverage:
+            row["spec_coverage"] = coverage[key]
+
+
+#: What the list shows, and the range columns that hold the same quantity when there is
+#: no single rated figure. A model that comes in 45 sizes has a performance envelope,
+#: not a duty point - a rated capacity exists only once a size is chosen for a duty.
+_ENVELOPE = {
+    "capacity": ("rated_capacity_m3h", "min_capacity_m3h", "max_capacity_m3h"),
+    "head": ("rated_head_m", None, "max_head_m"),
+    "efficiency": ("hydraulic_efficiency_pct", None, "bep_efficiency_pct"),
+    "speed": ("rated_speed_rpm", "min_speed_rpm", "max_speed_rpm"),
+    "power": ("rated_power_kw", None, "max_power_kw"),
+}
+
+
+def _attach_duty_envelope(db: DbSession, items: list[dict]) -> None:
+    """Add the performance envelope for the rows on this page.
+
+    `search_index` carries only the `rated_*` figures, so a record whose datasheet gave
+    "flow to 1,000 m3/h, head to 150 m" showed an em dash in every duty column. Of 78
+    technical spec rows, 6 hold a rated capacity and 56 hold a maximum - so nine out of
+    ten blank capacity cells were blank because the list asked the wrong column, not
+    because nobody had recorded anything.
+
+    The index cannot answer this without new columns and a reindex, so it is read from
+    the spec rows for the page being rendered: one query, a handful of rows.
+    """
+    ids = _model_ids(items)
+    if not ids:
+        return
+    wanted = sorted(
+        {name for trio in _ENVELOPE.values() for name in trio if name is not None}
+    )
+    columns = [TechnicalSpec.__table__.c[name] for name in wanted]
+    rows = db.execute(
+        select(TechnicalSpec.pump_model_id, *columns).where(
+            TechnicalSpec.is_current.is_(True),
+            TechnicalSpec.pump_model_id.in_(ids),
+        )
+    ).all()
+    by_model = {row[0]: dict(zip(wanted, row[1:], strict=True)) for row in rows}
+    for item in items:
+        key = _model_id(item.get("pump_model_id"))
+        held = by_model.get(key)
+        if not held:
+            continue
+        item["duty_envelope"] = {
+            quantity: {
+                "rated": held.get(rated),
+                "min": held.get(low) if low else None,
+                "max": held.get(high) if high else None,
+            }
+            for quantity, (rated, low, high) in _ENVELOPE.items()
+        }
 
 
 @router.post("", response_model=SearchResponse, dependencies=[Depends(require("search", "read"))])
@@ -49,6 +157,13 @@ def search(payload: SearchRequest, db: DbSession) -> SearchResponse:
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    # Per-group coverage for the rows on this page, in one query. The index carries a
+    # single percentage against 437 tracked fields, which renders a well-documented
+    # pump as "6.4%" and leaves it indistinguishable from an empty row.
+    _attach_coverage(db, items)
+    _attach_duty_envelope(db, items)
+    _attach_model_kind(items)
 
     facets = search_service.facet_counts(db, filters) if payload.include_facets else {}
     return SearchResponse(

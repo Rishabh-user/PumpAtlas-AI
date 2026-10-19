@@ -59,8 +59,14 @@ LIMITS: dict[str, Limit] = {
     # Every page a model reads costs. Twenty questions an hour is far beyond how fast
     # anybody reads an answer, and far below what a retry loop would spend overnight.
     "ai_ask": Limit(calls=20, seconds=3600),
-    # Each run reads several pages and starts a discovery job.
-    "ai_enrich": Limit(calls=10, seconds=3600),
+    # Each run reads several pages and starts a discovery job. Ten an hour was set
+    # when enrichment was a thing you did to one record you were looking at. Filling
+    # the gaps across a list is the same action repeated deliberately, by a person
+    # watching it happen, and ten would stop them four minutes in. A run takes about
+    # ninety seconds, so a person cannot exceed forty in an hour however hard they
+    # try - this still catches the failure the limit is for, which is a loop with no
+    # person behind it spending the night reading pages.
+    "ai_enrich": Limit(calls=120, seconds=3600),
     # The account lock already stops credential stuffing against one account. This stops
     # one caller working through many accounts.
     "login": Limit(calls=10, seconds=300),

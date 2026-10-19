@@ -108,21 +108,156 @@ def record_query(question: str) -> str:
 #: Defined here rather than in the route so the screen's chips and the assistant's own
 #: suggestions cannot drift apart - they were two lists saying the same thing.
 EXAMPLE_QUESTIONS: list[dict[str, str]] = [
+    # ---- answerable from the record ------------------------------------------------
+    #
+    # Chosen against what the catalogue actually holds, which is a narrower thing than
+    # what it tracks. 1,684 suppliers carry a country and a tier; 82 of 160 models carry
+    # technical specifications; four carry commercial ones. A question about price or
+    # lead time comes back empty not because the question is bad but because nobody has
+    # been quoted yet - so none of these ask one.
     {
-        "label": "Sulzer multistage pumps",
-        "query": "Which Sulzer multistage pumps do we hold and what is their rated head?",
+        "mode": "record",
+        "label": "Suppliers in Singapore",
+        "query": "Which suppliers do we hold in Singapore, and how many are approved?",
     },
     {
-        "label": "API 675 metering pumps",
-        "query": "Do we have any API 675 metering pumps for chemical injection?",
+        "mode": "record",
+        "label": "Approved vs pending",
+        "query": (
+            "How many suppliers are approved versus pending qualification, and "
+            "who approved them?"
+        ),
     },
     {
-        "label": "BB3 barrel pumps",
-        "query": "Who makes BB3 barrel pumps for crude export duty?",
+        "mode": "record",
+        "label": "Tier 1 OEMs",
+        "query": (
+            "List our Tier 1 OEM suppliers and the product families they are "
+            "recorded against."
+        ),
     },
     {
-        "label": "NACE MR0175 for sour service",
-        "query": "What NACE MR0175 compliant pumps are recorded for sour service?",
+        "mode": "record",
+        "label": "OH2 overhung pumps",
+        "query": "Which API 610 OH2 pump models do we hold, and who makes them?",
+    },
+    {
+        "mode": "record",
+        "label": "Between-bearings models",
+        "query": "What BB2 and BB3 between-bearings models are in the catalogue?",
+    },
+    {
+        "mode": "record",
+        "label": "Vertically suspended",
+        "query": "Show me the VS4 and VS6 vertically suspended pumps we have recorded.",
+    },
+    {
+        "mode": "record",
+        "label": "Indian suppliers with GST",
+        "query": (
+            "Which Indian suppliers do we hold, and which of them have a GST "
+            "number on record?"
+        ),
+    },
+    {
+        "mode": "record",
+        "label": "Models with duty data",
+        "query": (
+            "Which pump models have technical specifications recorded, and "
+            "which are still empty?"
+        ),
+    },
+    {
+        "mode": "record",
+        "label": "Suppliers missing a website",
+        "query": "Which approved suppliers have no website recorded?",
+    },
+    {
+        "mode": "record",
+        "label": "Where a value came from",
+        "query": (
+            "For the Flowserve ECPJ, what is recorded and which source did "
+            "each value come from?"
+        ),
+    },
+    # ---- the web is the only place these are answered ------------------------------
+    #
+    # A manufacturer publishes duty curves, materials and configuration. It does not
+    # publish a price, a lead time or an on-time delivery record, so no question here
+    # asks for one: ten measured enrichment runs returned none of the three.
+    {
+        "mode": "web",
+        "label": "Find a datasheet",
+        "query": (
+            "Find the datasheet for the Sulzer MSD multistage pump and tell me its "
+            "duty range and materials."
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Barrel pumps for crude export",
+        "query": "Who makes API 610 BB5 barrel pumps suitable for crude export duty?",
+    },
+    {
+        "mode": "web",
+        "label": "Sour service compliance",
+        "query": (
+            "Which pump manufacturers state NACE MR0175 compliance for sour service, "
+            "and where do they say it?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Seal plans for hot hydrocarbon",
+        "query": (
+            "What API 682 seal arrangements and flush plans are recommended for "
+            "hot hydrocarbon service?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Materials for sulphur service",
+        "query": (
+            "What casing and impeller materials do manufacturers specify for "
+            "molten sulphur service?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Suppliers in a region",
+        "query": "Which Oil & Gas pump manufacturers have manufacturing in South East Asia?",
+    },
+    {
+        "mode": "web",
+        "label": "Hazardous area certification",
+        "query": (
+            "Which pump manufacturers publish ATEX and IECEx certification for "
+            "Zone 1 equipment?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "API 610 versus ISO 13709",
+        "query": (
+            "What is the difference between API 610 and ISO 13709, and does a pump "
+            "certified to one satisfy the other?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Sea water injection",
+        "query": (
+            "Which manufacturers build sea water injection pumps for FPSO duty, "
+            "and in what materials?"
+        ),
+    },
+    {
+        "mode": "web",
+        "label": "Vertical sump pumps",
+        "query": (
+            "Find vertical sump pump ranges rated above 500 m3/h and tell me which "
+            "standards they are built to."
+        ),
     },
 ]
 

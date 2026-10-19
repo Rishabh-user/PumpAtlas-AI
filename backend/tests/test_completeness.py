@@ -272,3 +272,109 @@ class TestQualifyingASupplierIsAPersonsDecision:
 
         with pytest.raises(pydantic.ValidationError):
             QualificationDecision(approval_status="approved", note="ok")
+
+
+class TestCoverageIsReportedPerGroup:
+    """One percentage against 437 fields cannot distinguish two different problems.
+
+    A pump with a full datasheet holds about 30 fields and reads as 6% complete,
+    because 60 commercial, 52 delivery and 55 operational fields stay empty until
+    somebody quotes it. Next to an untouched record it looks identical, and the two
+    need entirely different work.
+    """
+
+    def test_every_group_is_present_even_when_empty(self):
+        """An absent group is 0 of 60, not missing from the answer."""
+        from app.schemas.specs import SPEC_FIELDS
+
+        coverage = completeness.model_coverage(PumpModel(), Pump(), {})
+        for group in SPEC_FIELDS:
+            assert group in coverage, group
+            assert coverage[group]["recorded"] == 0
+            assert coverage[group]["tracked"] > 0
+
+    def test_identity_fields_are_counted_separately(self):
+        coverage = completeness.model_coverage(PumpModel(), Pump(), {})
+        assert "attributes" in coverage
+        assert coverage["attributes"]["tracked"] == len(
+            completeness.MODEL_ATTRIBUTE_FIELDS
+        ) + len(completeness.PUMP_ATTRIBUTE_FIELDS)
+
+    def test_the_groups_account_for_every_tracked_field(self):
+        """So the single percentage stays derivable from the breakdown."""
+        coverage = completeness.model_coverage(PumpModel(), Pump(), {})
+        assert sum(c["tracked"] for c in coverage.values()) == completeness.MODEL_TRACKED
+
+    def test_a_group_with_values_counts_them(self):
+        from app.models.specs import TechnicalSpec
+
+        spec = TechnicalSpec(rated_capacity_m3h=120, rated_head_m=85)
+        coverage = completeness.model_coverage(PumpModel(), Pump(), {"technical": spec})
+        assert coverage["technical"]["recorded"] == 2
+
+    def test_an_empty_json_column_does_not_count_as_recorded(self):
+        """These columns are created as `{}` rather than left null.
+
+        Counting them inflated every row by one per group and, in the SQL form, was
+        the one thing that disagreed with the Python form.
+        """
+        from app.models.specs import TechnicalSpec
+
+        spec = TechnicalSpec(extra={})
+        coverage = completeness.model_coverage(PumpModel(), Pump(), {"technical": spec})
+        assert coverage["technical"]["recorded"] == 0
+
+
+class TestTheSqlAndPythonFormsAgree:
+    """`coverage_for_models` answers a whole page in one query; `model_coverage`
+    answers one record in Python. The list page and the profile page showing
+    different counts for the same record is the sort of thing nobody reports as a bug
+    and everybody quietly stops trusting."""
+
+    def test_enum_columns_are_not_sent_to_a_text_function(self):
+        """`Enum` subclasses `String`, so matching on the rendered type name sent
+        `btrim()` at a Postgres enum and the whole query failed."""
+        from sqlalchemy import Enum as SAEnum
+
+        from app.models.specs import TechnicalSpec
+
+        column = TechnicalSpec.__table__.c["driver_type"]
+        assert isinstance(column.type, SAEnum)
+        rendered = str(completeness._recorded_in_sql(column))
+        assert "btrim" not in rendered
+
+    def test_text_columns_treat_an_empty_string_as_absent(self):
+        from app.models.specs import TechnicalSpec
+
+        rendered = str(
+            completeness._recorded_in_sql(TechnicalSpec.__table__.c["impeller_type"])
+        )
+        assert "btrim" in rendered
+
+    def test_array_columns_are_measured_by_length(self):
+        from app.models.specs import TechnicalSpec
+
+        rendered = str(
+            completeness._recorded_in_sql(
+                TechnicalSpec.__table__.c["certificate_numbers"]
+            )
+        )
+        assert "cardinality" in rendered
+
+    def test_json_columns_exclude_the_empty_object(self):
+        from app.models.specs import TechnicalSpec
+
+        # The literals are bound parameters, so compile them in to see them.
+        clause = completeness._recorded_in_sql(TechnicalSpec.__table__.c["extra"])
+        rendered = str(
+            clause.compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "'{}'" in rendered
+        assert "'[]'" in rendered
+
+    def test_an_empty_page_asks_nothing(self):
+        class _Db:
+            def execute(self, *_a, **_k):
+                raise AssertionError("should not query for an empty page")
+
+        assert completeness.coverage_for_models(_Db(), []) == {}

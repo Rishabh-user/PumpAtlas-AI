@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.config import settings
 from app.models.base import Base, SoftDelete, TenantScoped, Timestamps, UUIDPrimaryKey
 from app.models.enums import (
     ConfidenceLevel,
@@ -94,30 +95,45 @@ class Vendor(UUIDPrimaryKey, Timestamps, SoftDelete, TenantScoped, Base):
     # The alternative was discovered the hard way on `vendor_contacts`: declaring a
     # column the deployed database lacks makes *every* read of that table fail with
     # "column does not exist", because an ORM entity load asks for all of them.
-    address_line: Mapped[str | None] = mapped_column(
-        String(500), deferred=True, comment="Street address as the source states it"
-    )
-    state_region: Mapped[str | None] = mapped_column(
-        String(120), deferred=True, comment="State, province or county"
-    )
-    legal_entity_name: Mapped[str | None] = mapped_column(
-        String(255),
-        deferred=True,
-        comment="Registered name where it differs from the trading name",
-    )
-    client_since: Mapped[date | None] = mapped_column(
-        Date,
-        deferred=True,
-        comment="When this client first opened an account with the supplier",
-    )
-    is_purchasing_blocked: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-        deferred=True,
-        comment="The client has barred purchasing from this supplier",
-    )
-    purchasing_block_note: Mapped[str | None] = mapped_column(Text, deferred=True)
+    # Declared only once the migration that creates them has run.
+    #
+    # `deferred=True` keeps an entity *load* working against a database without them,
+    # and that was enough while nothing created a vendor. It is not enough for an
+    # INSERT: the statement names every mapped column, so creating any supplier failed
+    # with `column "address_line" of relation "vendors" does not exist` - which took
+    # out the discovery Store button, `POST /vendors`, and every sweep that found
+    # something worth keeping.
+    #
+    # `exclude_properties` does not help: it governs attributes, and the INSERT is
+    # built from the table. Declaring them conditionally is what actually keeps the
+    # column off the statement. Set `VENDOR_STRUCTURE_READY=true` after applying
+    # `db/migrations/003_client_vendor_structure.sql`, and `/ready` reports a mismatch
+    # in either direction so this cannot drift unnoticed.
+    if settings.VENDOR_STRUCTURE_READY:
+        address_line: Mapped[str | None] = mapped_column(
+            String(500), deferred=True, comment="Street address as the source states it"
+        )
+        state_region: Mapped[str | None] = mapped_column(
+            String(120), deferred=True, comment="State, province or county"
+        )
+        legal_entity_name: Mapped[str | None] = mapped_column(
+            String(255),
+            deferred=True,
+            comment="Registered name where it differs from the trading name",
+        )
+        client_since: Mapped[date | None] = mapped_column(
+            Date,
+            deferred=True,
+            comment="When this client first opened an account with the supplier",
+        )
+        is_purchasing_blocked: Mapped[bool] = mapped_column(
+            Boolean,
+            nullable=False,
+            default=False,
+            deferred=True,
+            comment="The client has barred purchasing from this supplier",
+        )
+        purchasing_block_note: Mapped[str | None] = mapped_column(Text, deferred=True)
     logo_url: Mapped[str | None] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
     ai_summary: Mapped[str | None] = mapped_column(

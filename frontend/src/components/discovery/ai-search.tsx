@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Database, Globe2, Loader2, Save, Square, X } from "lucide-react";
+import { Globe2, Loader2, Save, Square, X } from "lucide-react";
 
 import { ErrorState, SuccessNote } from "@/components/data/states";
 import { CandidateList } from "@/components/discovery/candidate-list";
@@ -84,7 +84,10 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
   const [reviewing, setReviewing] = useState<DiscoveryCandidate | null>(null);
   // Off by default: writing straight into the record without anyone looking is a
   // deliberate choice, not the default one.
-  const [autoStore, setAutoStore] = useState(false);
+  // Always on. Findings are written as they are read, flagged AI-extracted and
+  // unverified, and confirmed on the record itself - there is no queue to approve
+  // them into any more, so an opt-in checkbox would only offer to throw them away.
+  const autoStore = true;
   const [scopes, setScopes] = useState<DiscoveryScopes | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
@@ -429,34 +432,6 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
               </p>
             ) : null}
 
-            <label
-              className={cn(
-                "flex cursor-pointer items-start gap-2 rounded-md border p-2.5 transition-colors",
-                autoStore
-                  ? "border-destructive/40 bg-destructive/[0.06]"
-                  : "border-border bg-background/50 hover:bg-accent/40",
-              )}
-            >
-              <Checkbox
-                checked={autoStore}
-                onCheckedChange={(value) => setAutoStore(value === true)}
-                className="mt-0.5"
-              />
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                  <Database className="size-3.5 text-destructive" />
-                  Store everything it finds, without asking
-                </span>
-                <span className="mt-0.5 block text-2xs leading-relaxed text-muted-foreground">
-                  Each confident candidate is written as it is read, instead of
-                  waiting for you to approve it.
-                </span>
-                <span className="mt-0.5 block text-2xs leading-relaxed text-destructive">
-                  Fields still need a quote from their page — but nobody reviews
-                  these before they land.
-                </span>
-              </span>
-            </label>
 
             <div className="flex items-center gap-2">
               <Button
@@ -524,7 +499,23 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
                   {kind.nounPlural} found ({run.candidates.length})
                 </span>
                 {run.stored_count ? (
-                  <Badge variant="success">{run.stored_count} stored</Badge>
+                  <Badge
+                    variant="success"
+                    title="Written as each page was read, flagged unverified. Confirm them on the record."
+                  >
+                    {run.stored_count} stored · unverified
+                  </Badge>
+                ) : null}
+                {/* What is left is what the run would not vouch for on its own. With
+                  * no review queue, this run is where those get decided - in the
+                  * context of the pages that produced them. */}
+                {selectable.length ? (
+                  <Badge
+                    variant="outline"
+                    title="Read with too little confidence to store unasked. Store or discard them here."
+                  >
+                    {selectable.length} below the confidence bar
+                  </Badge>
                 ) : null}
                 {blockedCount ? (
                   <Badge
@@ -548,7 +539,7 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
                   >
                     {allSelected
                       ? "Clear selection"
-                      : `Select all ${selectable.length}`}
+                      : `Select all ${selectable.length} undecided`}
                   </button>
                 ) : null}
               </div>
@@ -575,7 +566,9 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
                 <SuccessNote>
                   Stored {result.stored.length}{" "}
                   {result.stored.length === 1 ? kind.noun : kind.nounPlural}{" "}
-                  with full provenance.
+                  with full provenance, flagged unverified. Confirm them on the
+                  record — an existing one gains a new version rather than losing
+                  what it held.
                 </SuccessNote>
               ) : null}
               {result.stored.map((stored) => (
@@ -608,7 +601,8 @@ export function AiSearch({ kind: slug }: { kind: DiscoveryKindSlug }) {
         {selected.length ? (
           <div className="flex items-center justify-between gap-3 border-t border-border bg-card px-4 py-2.5">
             <span className="text-xs font-medium text-primary">
-              <span className="font-mono">{selected.length}</span> selected
+              <span className="font-mono">{selected.length}</span> selected — these
+              were read with too little confidence to store on their own
             </span>
             <div className="flex items-center gap-1.5">
               <Button

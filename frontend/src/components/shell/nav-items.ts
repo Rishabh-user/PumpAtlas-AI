@@ -1,5 +1,4 @@
 import {
-  ArrowLeftRight,
   BrainCircuit,
   Building2,
   Cog,
@@ -9,7 +8,6 @@ import {
   MessagesSquare,
   Search,
   ShieldCheck,
-  Sparkles,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -46,12 +44,6 @@ const SECTIONS: NavSection[] = [
         icon: Building2,
         needs: ["vendor", "read"],
       },
-      {
-        href: "/compare",
-        label: "Comparison",
-        icon: ArrowLeftRight,
-        needs: ["comparison", "read"],
-      },
     ],
   },
   {
@@ -63,14 +55,7 @@ const SECTIONS: NavSection[] = [
         icon: Download,
         needs: ["ingestion", "read"],
       },
-      {
-        href: "/review",
-        label: "AI review",
-        icon: Sparkles,
-        badgeKey: "ai_review",
-        needs: ["ai_review", "read"],
-      },
-      {
+            {
         href: "/quality",
         label: "Data quality",
         icon: ShieldCheck,

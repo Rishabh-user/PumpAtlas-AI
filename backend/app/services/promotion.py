@@ -139,7 +139,7 @@ def is_usable_subject_name(raw: str | None) -> bool:
     Extracting a marketing page unattended produces subjects like ``"610"`` (the
     standard number mistaken for a product name) and ``"1"``. Promoting those creates
     records nobody can act on and which then have to be found and merged away, so an
-    unattended run is better off leaving the candidate in the review queue.
+    unattended run is better off leaving the candidate undecided on its run.
     """
     if not raw:
         return False
@@ -673,7 +673,7 @@ def promote_extracted_entity(
     it.
 
     ``unattended`` tightens the bar for auto-promotion: a candidate whose subject the
-    model failed to identify is left in the review queue instead of becoming a record
+    model failed to identify is left undecided on its run instead of becoming a record
     named "610" that somebody has to find and merge away later.
 
     ``spec_groups`` names which spec tables may be written. Leaving it None - as the AI

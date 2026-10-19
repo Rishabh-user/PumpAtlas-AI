@@ -58,7 +58,10 @@ export function ScoreCard({
   const unscored = score === null || score === undefined;
   const value = score ?? 0;
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+    // `h-full` because the grid stretches the row to its tallest card, and a card that
+    // keeps its natural height inside that row sits short and vertically centred - which
+    // is what happened the moment these were wrapped in a button to make them clickable.
+    <div className="flex h-full flex-col rounded-lg border border-border bg-card px-3 py-2.5">
       <div className="flex items-baseline justify-between gap-2">
         <span className="label-xs truncate">{label}</span>
         {grade ? (

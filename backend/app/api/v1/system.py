@@ -84,6 +84,36 @@ def ready(db: DbSession, response: Response) -> dict:
         ),
     }
 
+    # A flag that disagrees with the database is worse than either state on its own:
+    # set too early, every vendor INSERT names a column that is not there; left unset
+    # after the migration, six columns the product can read simply vanish.
+    try:
+        structured = bool(
+            db.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name='vendors' AND column_name='address_line'"
+                )
+            ).first()
+        )
+    except Exception:  # noqa: BLE001 - readiness must report, not raise
+        structured = settings.VENDOR_STRUCTURE_READY
+    checks["vendor_structure"] = {
+        "status": "ok" if structured == settings.VENDOR_STRUCTURE_READY else "mismatch",
+        "required": False,
+        "detail": (
+            None
+            if structured == settings.VENDOR_STRUCTURE_READY
+            else (
+                "Migration 003 has been applied; set VENDOR_STRUCTURE_READY=true so the "
+                "address, legal entity and purchasing-block columns are mapped again."
+                if structured
+                else "VENDOR_STRUCTURE_READY is true but migration 003 has not been "
+                "applied. Every vendor INSERT will fail until it is."
+            )
+        ),
+    }
+
     # Reported next to the secret key because it is the same class of mistake: a value
     # that is correct on a laptop and dangerous on the internet.
     checks["cors"] = {

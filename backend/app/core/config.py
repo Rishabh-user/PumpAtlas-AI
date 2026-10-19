@@ -34,6 +34,20 @@ class Settings(BaseSettings):
     #: public: a monitoring endpoint nobody scrapes is a smaller problem than an open one.
     METRICS_TOKEN: str = ""
 
+    #: Whether `db/migrations/003_client_vendor_structure.sql` has been applied.
+    #:
+    #: Six columns on `vendors` and two tables exist only after that migration, and it
+    #: needs the database owner - the application role has no DDL rights, by design.
+    #: Mapping a column the database lacks breaks far more than it looks: `deferred`
+    #: keeps SELECT working, but an INSERT emits every mapped column, so creating any
+    #: vendor fails with `column "address_line" does not exist`. That took out the
+    #: discovery Store button, `POST /vendors`, and every sweep that found something.
+    #:
+    #: Left False the model simply does not declare them, and the product works without
+    #: the structured columns. Set it True once the migration has run; `/ready` reports
+    #: a mismatch either way, so this cannot drift silently.
+    VENDOR_STRUCTURE_READY: bool = False
+
     #: Whether the per-caller ceilings in `app.core.rate_limit` are enforced. On by
     #: default: the endpoints they guard spend provider money per call.
     RATE_LIMIT_ENABLED: bool = True
