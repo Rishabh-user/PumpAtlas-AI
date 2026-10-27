@@ -75,6 +75,7 @@ DECLARE
         'data_quality_flags', 'ai_suggestions', 'duplicate_candidates',
         'requirement_profiles', 'comparisons', 'comparison_items',
         'saved_searches', 'tagged_records', 'record_versions',
+        'chat_conversations', 'chat_turns',
         'audit_logs', 'tenant_permissions', 'api_keys',
         -- A client's approved supplier list tells a competitor who they will buy from,
         -- and a registration identifier is theirs alone. Strictly private: no

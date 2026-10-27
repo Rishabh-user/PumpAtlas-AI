@@ -20,16 +20,31 @@ from __future__ import annotations
 
 import re
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
+from dataclasses import replace
 from typing import Any
+from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai import providers
+from app.ai.parallel_search import SearchExcerpt
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.pump import Pump, PumpModel
+from app.models.search import SearchIndex
 from app.schemas.specs import SPEC_FIELDS
-from app.services import ai_settings, promotion, records, search
+from app.services import (
+    ai_settings,
+    ingestion,
+    parsing,
+    promotion,
+    question_filters,
+    records,
+    search,
+)
 from app.services.search import SearchFilters
 
 log = get_logger(__name__)
@@ -59,6 +74,10 @@ Rules:
 - When the record and the web disagree, say both and say which is which.
 - Never invent a model code, a capacity, a pressure rating or a price. If a figure is
   not in the context, say it is not stated.
+- Cite only markers that actually appear in the context. If no records and no web
+  excerpts were given, say so plainly and cite nothing: writing [R1] to satisfy the
+  citation rule invents the very source the rule exists to demand, and the reader
+  cannot tell the difference.
 - A record lists only the fields it actually holds. If a field is absent from a record,
   that field is not recorded for it - say so, and do not read it as a zero or carry it
   over from a sibling record.
@@ -132,8 +151,7 @@ EXAMPLE_QUESTIONS: list[dict[str, str]] = [
         "mode": "record",
         "label": "Tier 1 OEMs",
         "query": (
-            "List our Tier 1 OEM suppliers and the product families they are "
-            "recorded against."
+            "List our Tier 1 OEM suppliers and the product families they are " "recorded against."
         ),
     },
     {
@@ -155,8 +173,7 @@ EXAMPLE_QUESTIONS: list[dict[str, str]] = [
         "mode": "record",
         "label": "Indian suppliers with GST",
         "query": (
-            "Which Indian suppliers do we hold, and which of them have a GST "
-            "number on record?"
+            "Which Indian suppliers do we hold, and which of them have a GST " "number on record?"
         ),
     },
     {
@@ -176,8 +193,7 @@ EXAMPLE_QUESTIONS: list[dict[str, str]] = [
         "mode": "record",
         "label": "Where a value came from",
         "query": (
-            "For the Flowserve ECPJ, what is recorded and which source did "
-            "each value come from?"
+            "For the Flowserve ECPJ, what is recorded and which source did " "each value come from?"
         ),
     },
     # ---- the web is the only place these are answered ------------------------------
@@ -231,8 +247,7 @@ EXAMPLE_QUESTIONS: list[dict[str, str]] = [
         "mode": "web",
         "label": "Hazardous area certification",
         "query": (
-            "Which pump manufacturers publish ATEX and IECEx certification for "
-            "Zone 1 equipment?"
+            "Which pump manufacturers publish ATEX and IECEx certification for " "Zone 1 equipment?"
         ),
     },
     {
@@ -266,12 +281,32 @@ EXAMPLE_QUESTIONS: list[dict[str, str]] = [
 _GREETINGS = frozenset(
     {
         # One-word openings.
-        "hi", "hii", "hiya", "hello", "helo", "hey", "heya", "yo", "sup",
-        "greetings", "namaste", "howdy", "morning", "evening",
+        "hi",
+        "hii",
+        "hiya",
+        "hello",
+        "helo",
+        "hey",
+        "heya",
+        "yo",
+        "sup",
+        "greetings",
+        "namaste",
+        "howdy",
+        "morning",
+        "evening",
         # Two- and three-word openings, kept whole because "there" and "all" are
         # meaningless on their own.
-        "hi there", "hello there", "hey there", "hi all", "hello all", "hi team",
-        "good morning", "good afternoon", "good evening", "good day",
+        "hi there",
+        "hello there",
+        "hey there",
+        "hi all",
+        "hello all",
+        "hi team",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "good day",
         "whats up",
     }
 )
@@ -280,9 +315,17 @@ _GREETINGS = frozenset(
 #: wrong answer to "how are you" - it ignores what was actually asked.
 _WELLBEING = frozenset(
     {
-        "how are you", "how are you doing", "how r u", "hows it going",
-        "how is it going", "you ok", "you okay", "are you there", "you there",
-        "are you working", "still there",
+        "how are you",
+        "how are you doing",
+        "how r u",
+        "hows it going",
+        "how is it going",
+        "you ok",
+        "you okay",
+        "are you there",
+        "you there",
+        "are you working",
+        "still there",
     }
 )
 _THANKS = frozenset(
@@ -311,8 +354,23 @@ _PUNCTUATION = re.compile(r"[^a-z0-9\s]+")
 #: than one entry each in a list that could never be finished.
 _ADDRESS_TERMS = frozenset(
     {
-        "bro", "bruh", "buddy", "mate", "dude", "man", "sir", "madam", "maam", "boss",
-        "team", "guys", "everyone", "all", "friend", "there", "ji",
+        "bro",
+        "bruh",
+        "buddy",
+        "mate",
+        "dude",
+        "man",
+        "sir",
+        "madam",
+        "maam",
+        "boss",
+        "team",
+        "guys",
+        "everyone",
+        "all",
+        "friend",
+        "there",
+        "ji",
     }
 )
 
@@ -697,6 +755,88 @@ def _record_context(details: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+#: A page the chat reads itself is read briefly or not at all: the caller is waiting,
+#: and five pages fetched one after another at the crawler's 45s ceiling would outlast
+#: any reasonable patience. Short, bounded, and concurrent.
+WEB_READ_TIMEOUT_SECONDS = 6
+WEB_READ_WORKERS = 5
+
+#: A wall-clock ceiling on the whole page-reading phase.
+#:
+#: `WEB_READ_TIMEOUT_SECONDS` is httpx's *read* timeout, which restarts on every chunk -
+#: so a server that trickles bytes can hold a connection well past it, which is exactly
+#: what the crawler's own 45s ceiling exists to survive. Here the caller is waiting, so
+#: the phase gets a budget it cannot exceed whatever the far end does. Pages still in
+#: flight when it expires are abandoned; they were bare links before and they stay bare
+#: links, which costs the answer nothing it had.
+WEB_READ_BUDGET_SECONDS = 7
+
+
+def _read_linked_page(result: Any) -> bool:
+    """Fetch one linked page and attach its text. True if it became quotable.
+
+    Everything is caught. A page that will not load, is disallowed by robots, or parses
+    to nothing simply stays a bare link - which is the state it was already in, so a
+    failure here costs the answer nothing.
+    """
+    url = getattr(result, "url", "") or ""
+    if not url.startswith(("http://", "https://")):
+        return False
+    try:
+        if not ingestion.robots_allows(url):
+            return False
+        body, headers, status_code = ingestion.fetch_url(url, timeout=WEB_READ_TIMEOUT_SECONDS)
+        if status_code >= 400:
+            return False
+        mime_type = (headers.get("content-type") or "").split(";")[0].strip() or None
+        parsed = parsing.parse_bytes(body, filename=urlparse(url).path, mime_type=mime_type)
+        text = (parsed.text or "").strip()
+        if not text:
+            return False
+        result.excerpts.append(SearchExcerpt(text=text[:MAX_EXCERPT_CHARS], locator=url))
+        return True
+    except Exception as exc:  # noqa: BLE001 - a link that will not read stays a link
+        log.info("chat.page_read_failed", url=url[:120], error=str(exc)[:120])
+        return False
+
+
+def _read_linked_pages(results: list[Any]) -> int:
+    """Read every result the provider returned without text. Returns how many worked.
+
+    Concurrent because they are independent and the caller is waiting: five pages in
+    sequence is five timeouts deep, five in parallel is one.
+    """
+    pending = [r for r in results if not _readable(r)]
+    if not pending:
+        return 0
+
+    pool = ThreadPoolExecutor(max_workers=WEB_READ_WORKERS)
+    futures = [pool.submit(_read_linked_page, result) for result in pending]
+    read = 0
+    try:
+        for future in as_completed(futures, timeout=WEB_READ_BUDGET_SECONDS):
+            if future.result():
+                read += 1
+    except FuturesTimeout:
+        abandoned = sum(1 for future in futures if not future.done())
+        log.info("chat.page_read_budget_spent", abandoned=abandoned)
+    finally:
+        # Not waited on: a thread still blocked on a slow server would put the caller
+        # right back where this budget exists to stop them being.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return read
+
+
+def _readable(result: Any) -> bool:
+    """Whether the provider actually returned page text for this result.
+
+    Not a quality judgement - a short excerpt is still evidence. It only separates a
+    page that was fetched and read from a bare link, because the second cannot support
+    a claim however plausible its title looks.
+    """
+    return bool((getattr(result, "combined_excerpt", "") or "").strip())
+
+
 def _web_context(results: list[Any]) -> str:
     """The web excerpts, as numbered blocks the model can cite."""
     lines: list[str] = []
@@ -747,6 +887,190 @@ def _looks_new(result: Any, held: set[str]) -> str | None:
     return None if promotion.normalize_company_name(name) in held else name
 
 
+def _duty_coverage(db: Session, keys: list[str]) -> str:
+    """How many indexed records state each duty figure the question asked about.
+
+    One query, run only when a duty filter has already come back empty. The sentence it
+    produces is the difference between "nothing matches your 200 m3/h requirement" -
+    which reads as *we have no such pump* - and the truth, which is that almost no
+    record states a flow rate at all.
+    """
+    columns = [question_filters.DUTY_COLUMNS[k] for k in keys if k in question_filters.DUTY_COLUMNS]
+    if not columns:
+        return ""
+    selected = [func.count(getattr(SearchIndex, c)).label(c) for c in columns]
+    row = (
+        db.execute(select(func.count().label("total"), *selected).select_from(SearchIndex))
+        .mappings()
+        .one()
+    )
+    total = row["total"] or 0
+    if not total:
+        return ""
+    parts = [
+        f"{row[question_filters.DUTY_COLUMNS[k]]} state a {question_filters.DUTY_LABELS[k].lower()}"
+        for k in keys
+        if k in question_filters.DUTY_COLUMNS
+    ]
+    return f"Of {total} indexed records, " + ", ".join(parts) + "."
+
+
+#: A citation as the prose writes it, with any space that runs up to it.
+_MARKER = re.compile(r"[ \t]*\[([RW]\d+)\]")
+
+
+def _strip_unknown_markers(prose: str, known: set[str]) -> tuple[str, list[str]]:
+    """Remove citations pointing at sources that were never given.
+
+    The system prompt says to cite every claim, and a model with nothing to cite
+    satisfies that rule by inventing a marker: asked which Brazilian pumps are held,
+    with no records matched, it answered "we do not hold any pumps from Brazil [R1]".
+    There is no R1. The sentence is true and the citation is fabricated, which is worse
+    than an uncited sentence - the page renders markers as references to real records,
+    so a reader sees evidence where none exists.
+
+    Tightening the prompt fixed one question and not the next, which is what prompts
+    do. This is checkable, so it is checked: a marker survives only if the context
+    actually carried that source.
+    """
+    dropped: list[str] = []
+
+    def keep(match: re.Match[str]) -> str:
+        if match.group(1) in known:
+            return match.group(0)
+        dropped.append(match.group(1))
+        return ""
+
+    return _MARKER.sub(keep, prose), dropped
+
+
+def _search_question(
+    db: Session, parsed: question_filters.Parsed
+) -> tuple[list[Any], int, list[str]]:
+    """Search on what the question asked for, relaxing rather than returning zero.
+
+    Two clauses in this search are AND-ed, and each can empty the result on its own:
+
+    * A numeric filter excludes a row whose column is NULL, which is the right SQL and
+      the wrong answer here - 6 of 166 indexed records state a flow rate, so filtering
+      on one empties the catalogue.
+    * The free-text half matches against the record *label*. Words like "suppliers" or
+      "hold" appear in no label, so the leftovers of a question can zero out a filter
+      that was perfectly correct. Asked for suppliers held in Singapore, the filter
+      found the 6 Singaporean records and the word "suppliers" then threw them away.
+
+    So the search is tried as a ladder, widest requirement first, and every rung given
+    up is reported. The reader is told what was dropped; they are never handed an empty
+    answer that reads as *we have no such pump* when the truth is that the question
+    asked about a column the catalogue does not fill in.
+
+    Categorical filters are the one thing never relaxed. A vendor with no country
+    recorded genuinely cannot be shown as Singaporean, and pretending otherwise is the
+    error this whole module exists to stop.
+    """
+
+    # Once a country, type or standard has been recognised, the filters say what the
+    # question asked for and the leftover words are the grammar of asking. They order
+    # the answer; they do not get to throw records out of it.
+    narrows = not parsed.categorical_named
+
+    def run(filters: SearchFilters) -> tuple[list[Any], int]:
+        return search.search_pump_models(
+            db,
+            filters,
+            sort="relevance",
+            limit=MAX_RECORDS,
+            text_narrows=narrows,
+        )
+
+    hits, total = run(parsed.filters)
+    if hits or not parsed.understood:
+        # Nothing was recognised, so there is no filter to blame and nothing to relax:
+        # an empty result here is an ordinary empty result.
+        return hits, total, []
+
+    notes: list[str] = []
+    duty = [k for k in question_filters.DUTY_LABELS if k in parsed.understood]
+
+    # Rung two: keep every filter, drop the leftover words. Only reachable where the
+    # words were narrowing in the first place - that is, where nothing categorical was
+    # recognised and the free text is all the question gave.
+    if parsed.filters.query and narrows:
+        without_text = replace(parsed.filters, query=None)
+        hits, total = run(without_text)
+        if hits:
+            notes.append(
+                f"No record label matches the words "
+                f"{_quoted(parsed.filters.query)}, so the answer is drawn from the "
+                "structured filters alone."
+            )
+            return hits, total, notes
+    else:
+        without_text = parsed.filters
+
+    # Rung three: give up the duty point, which the catalogue mostly does not record.
+    if duty:
+        widest = replace(without_text, **{f: None for f in question_filters.DUTY_FIELDS})
+        hits, total = run(widest)
+        named = ", ".join(question_filters.DUTY_LABELS[k] for k in duty)
+        notes.append(
+            f"No held record states {named} within the range asked for, so that part "
+            f"of the requirement was set aside. {_duty_coverage(db, duty)} The records "
+            "below match the rest of the question only, and have not been shown to "
+            "meet the duty point."
+        )
+        return hits, total, notes
+
+    # Every rung tried. The filters themselves are what found nothing, which is a real
+    # answer: say which ones, so it does not read as a failed search.
+    notes.append(
+        "Nothing held matches "
+        f"{question_filters.describe(parsed.understood)}. That is the catalogue's "
+        "answer, not a failed search."
+    )
+    return hits, total, notes
+
+
+def _quoted(query: str) -> str:
+    """The free-text terms as a reader would say them, without the query syntax."""
+    words = [w for w in query.split() if w.lower() != "or"]
+    return ", ".join(f"\u201c{w}\u201d" for w in words)
+
+
+def _web_phase(client: Any, question: str) -> tuple[list[Any], str | None]:
+    """Search the web and read what comes back. Returns (results, error).
+
+    Deliberately touches no database, which is what lets it run on another thread while
+    the record half queries. A SQLAlchemy Session is not thread-safe; HTTP is.
+    """
+    try:
+        run = client.search(
+            # The objective asks for sources explicitly because of how the OpenAI
+            # provider works: it has no result list, and its own module says so - the
+            # pages come back as `url_citation` annotations, so the citations *are* the
+            # results. A model that answers from memory cites nothing and the search
+            # returns zero results with no error. Asking for manufacturer pages makes
+            # citing the obvious way to answer.
+            f"Oil and gas pump procurement question: {question}. "
+            "Cite the manufacturer, distributor or datasheet pages used.",
+            [question],
+            max_results=MAX_WEB_RESULTS,
+        )
+        results = list(run.results)
+    except Exception as exc:  # noqa: BLE001 - the record half must still answer
+        log.warning("chat.web_search_failed", error=str(exc)[:200])
+        return [], f"Web search failed: {type(exc).__name__}: {exc}"[:300]
+
+    if results and settings.CHAT_READ_LINKED_PAGES:
+        # Turn the bare links into sources before anything decides which are citable,
+        # rather than discarding them for a lack of text the provider was never going
+        # to give.
+        recovered = _read_linked_pages(results)
+        if recovered:
+            log.info("chat.pages_read", count=recovered)
+    return results, None
+
+
 def answer(
     db: Session,
     question: str,
@@ -774,45 +1098,84 @@ def answer(
     if spoken is not None:
         return _no_search_result(spoken)
 
-    terms = record_query(question)
-    if not terms:
+    # A country, a standard, a pump type or a duty figure named in the question is a
+    # *filter*, not a search term. The index carries each as a column, and asking the
+    # column is both correct and cheaper than hoping the reading model notices
+    # afterwards - which it does not: asked which suppliers we hold in Singapore, it
+    # was handed every record the word-match returned and reported four vendors as
+    # Singaporean whose own country field said DE, JP, AE and CA.
+    parsed = question_filters.parse(question)
+    terms = record_query(parsed.residue)
+    if not terms and not parsed.understood:
         # Nothing searchable in the message. Ask for the missing detail rather than
         # spending a web search on words like "what do we have".
         return _no_search_result(clarification_reply(question))
-    hits, record_total = search.search_pump_models(
-        db, SearchFilters(query=terms), sort="relevance", limit=MAX_RECORDS
-    )
+    parsed.filters.query = terms or None
+    if settings.CHAT_SHARED_MASTER_ONLY:
+        # One catalogue, one answer. Without this the same question returns a different
+        # answer to a tenant, to an API key and to platform staff - each correct about
+        # what that caller may read, and indistinguishable from a broken API to whoever
+        # is integrating it. `only_shared_master` narrows *within* row level security,
+        # so it can only ever return fewer rows than the caller is entitled to.
+        parsed.filters.only_shared_master = True
+    # The web half is the long pole and needs no database: measured on one answer, the
+    # provider took 6.7s and reading the pages 5.6s, while the record search and its
+    # spec queries took 2.4s waiting their turn. They are independent, so they run
+    # together and the record half costs nothing in wall time.
+    #
+    # Started only once the question already looks like a pump question. The domain
+    # gate below refuses "what is the weather in Doha" precisely so a web search is not
+    # spent on it, and launching before the gate would undo that - so a question with
+    # no domain vocabulary falls back to running the web half afterwards, in the order
+    # it always did.
+    web_results: list[Any] = []
+    web_error: str | None = None
+    client = providers.configured_search_client(db) if use_web else None
+    if use_web and client is None:
+        web_error = (
+            "No web search provider is active. Add one at /ai-settings, or ask again "
+            "with the web turned off to answer from held records only."
+        )
+    looks_like_pumps = domain_signal(question)
+    pool: ThreadPoolExecutor | None = None
+    web_future: Future[tuple[list[Any], str | None]] | None = None
+    if client is not None and looks_like_pumps:
+        pool = ThreadPoolExecutor(max_workers=1)
+        web_future = pool.submit(_web_phase, client, question)
+
+    hits, record_total, search_notes = _search_question(db, parsed)
 
     # The domain gate, applied here rather than before the search because the search is
     # the better half of it: a question that matched a record is about oil and gas by
     # construction, whatever words it used. Only a question that matched nothing has to
     # persuade the vocabulary, so a vendor or model code the catalogue holds can never
     # be refused, and the gate costs no extra query.
-    if not hits and not domain_signal(question):
+    if not hits and not looks_like_pumps:
+        # Nothing started: the web phase only launches when `looks_like_pumps` is true,
+        # so refusing here still spends no search.
         return _no_search_result(off_domain_reply())
 
     details = record_details(db, hits)
 
-    web_results: list[Any] = []
-    web_error: str | None = None
-    if use_web:
-        client = providers.configured_search_client(db)
-        if client is None:
-            web_error = (
-                "No web search provider is active. Add one at /ai-settings, or ask again "
-                "with the web turned off to answer from held records only."
-            )
-        else:
-            try:
-                run = client.search(
-                    f"Oil and gas pump procurement question: {question}",
-                    [question],
-                    max_results=MAX_WEB_RESULTS,
-                )
-                web_results = list(run.results)
-            except Exception as exc:  # noqa: BLE001 - the record half must still answer
-                web_error = f"Web search failed: {type(exc).__name__}: {exc}"[:300]
-                log.warning("chat.web_search_failed", error=str(exc)[:200])
+    if web_future is not None:
+        # By now the record half has been running alongside it, so this usually returns
+        # immediately.
+        web_results, web_error = web_future.result()
+        if pool is not None:
+            pool.shutdown()
+    elif client is not None:
+        # The question matched a record without using any domain vocabulary, so the
+        # search was held back until the gate had passed. Rare, and sequential.
+        web_results, web_error = _web_phase(client, question)
+
+    # A result the provider could not read is a link, not a source. It used to be
+    # handed to the model as a numbered block - title, URL, and an empty excerpt -
+    # which is an invitation to cite it, and the model duly did: asked about Singapore
+    # it returned five Google Maps *search* URLs with zero characters between them and
+    # cited all five. A reader following [W3] reaches a map query, not a page, and the
+    # answer looked sourced. Only what was actually read can be evidence.
+    unread = [r for r in web_results if not _readable(r)]
+    web_results = [r for r in web_results if _readable(r)]
 
     reader = providers.configured_reading_model(db)
     if reader is None:
@@ -830,11 +1193,36 @@ def answer(
             "new_on_web": [],
             "web_error": web_error,
             "record_total": record_total,
+            "understood": question_filters.describe(parsed.understood),
+            "search_notes": search_notes,
         }
 
+    # The model is told what the search actually asked for, so it does not restate the
+    # question's own terms as though the records had been checked against them.
+    reading = question_filters.describe(parsed.understood)
+    if use_web and not web_results and not unread and web_error is None:
+        # The search ran and found nothing to show. Saying so matters: an empty `web`
+        # array with no error is indistinguishable from a web search that never
+        # happened, and the caller has no way to tell which they got.
+        search_notes = [
+            *search_notes,
+            "The web search returned no usable sources for this question. The active "
+            "provider reports the pages a model chose to cite rather than a ranked "
+            "result list, so a broad question often comes back with none.",
+        ]
+
+    if unread:
+        search_notes = [
+            *search_notes,
+            f"{len(unread)} web result(s) were links the search provider could not "
+            "read, so they are not quoted or cited. Only pages whose text was "
+            "returned can support a claim.",
+        ]
     context = "\n\n".join(
         part
         for part in (
+            f"HOW THE RECORDS WERE SELECTED: filtered on {reading}." if reading else "",
+            "\n".join(f"NOTE: {n}" for n in search_notes),
             f"RECORDS ({len(details)} of {record_total} held):\n{_record_context(details)}"
             if details
             else "RECORDS: none matched.",
@@ -852,6 +1240,14 @@ def answer(
         )
         prose = (result.text or "").strip()
         model_used = result.model
+        known = {r["marker"] for r in details if r.get("marker")} | {
+            f"W{index}" for index in range(1, len(web_results) + 1)
+        }
+        prose, invented = _strip_unknown_markers(prose, known)
+        if invented:
+            # Worth knowing about: it means the model is citing to satisfy a rule
+            # rather than because it has a source.
+            log.warning("chat.invented_citations", markers=invented, question=question[:120])
     except Exception as exc:  # noqa: BLE001 - report rather than 500 the page
         log.warning("chat.answer_failed", error=str(exc)[:200])
         return {
@@ -862,12 +1258,20 @@ def answer(
             "new_on_web": [],
             "web_error": web_error,
             "record_total": record_total,
+            "understood": question_filters.describe(parsed.understood),
+            "search_notes": search_notes,
         }
 
-    held = _held_names(db) if web_results else set()
+    # Capture considers every result, read or not. Being unreadable disqualifies a
+    # link from *supporting a claim*, which is what the split above is for; it does
+    # not disqualify it from being a lead. Capture fetches the page itself and writes
+    # a field only with a verbatim quote from what it fetched, so a link the search
+    # provider declined to read can still turn into evidence by the proper route.
+    candidates = [*web_results, *unread]
+    held = _held_names(db) if candidates else set()
     new_on_web = [
         {"url": r.url, "title": getattr(r, "title", None), "vendor_hint": hint}
-        for r in web_results
+        for r in candidates
         if (hint := _looks_new(r, held)) is not None
     ]
 
@@ -876,6 +1280,10 @@ def answer(
         "model": model_used,
         "records": details,
         "record_total": record_total,
+        # What the question was read as, so a misreading is visible on the page rather
+        # than buried in a plausible-sounding answer.
+        "understood": reading,
+        "search_notes": search_notes,
         "web": [_web_out(r, index) for index, r in enumerate(web_results, start=1)],
         "web_error": web_error,
         # Offered for capture, never stored from here: chat prose is not evidence.
@@ -899,6 +1307,8 @@ def _no_search_result(prose: str) -> dict[str, Any]:
         "web": [],
         "web_error": None,
         "new_on_web": [],
+        "understood": "",
+        "search_notes": [],
         "error": None,
     }
 

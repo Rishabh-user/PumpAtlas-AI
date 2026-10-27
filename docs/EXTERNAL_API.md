@@ -188,6 +188,13 @@ Three things worth knowing before you build on it:
 `GET /api/v1/chat/context` tells you whether a web provider is configured, so the far end
 can set expectations before the first question.
 
+**History.** Signed-in users' conversations are kept in the database
+(`/api/v1/chat/conversations`), private to the person who had them. A question you ask with
+an API key is also logged - one thread per question, against the key's tenant and tagged with
+the key's name - so a platform administrator (or that tenant's admin) can see in the Ask
+history which tenant searched what. Keys with no tenant (`--shared-only`) are not logged. It
+is a transcript, not evidence: nothing stored there is read back into search or a record.
+
 ---
 
 ## 6. Two things that will bite otherwise

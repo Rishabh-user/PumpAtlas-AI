@@ -200,12 +200,22 @@ def search_pump_models(
     sort: str = "relevance",
     limit: int = 25,
     offset: int = 0,
+    text_narrows: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     """Run a search. Returns ``(rows, total_count)``.
 
     Tenant scoping is enforced by row level security on ``search_index``, so no
     tenant predicate is added here - that avoids the classic bug where one query
     forgets the filter and leaks across tenants.
+
+    ``text_narrows=False`` keeps ``filters.query`` for ordering but takes it out of the
+    WHERE clause, so the words rank the rows that the structured filters chose instead
+    of excluding rows of their own accord. The search bar wants the default: someone
+    typing "sulzer" means only Sulzer. A parsed question does not, because by then the
+    meaningful words have already become filters and what is left is the grammar of
+    asking - "models", "catalogue", "suppliers". Those appear in no label, and left in
+    the WHERE clause they quietly pruned real matches: a question about BB2 and BB3
+    models returned one of the two records that exist.
     """
     if sort not in SORT_OPTIONS:
         raise ValueError(f"Unsupported sort key {sort!r}. Allowed: {sorted(SORT_OPTIONS)}")
@@ -215,6 +225,7 @@ def search_pump_models(
     if filters.query:
         tsquery = build_tsquery(filters.query)
         rank = func.ts_rank_cd(SearchIndex.search_vector, tsquery)
+    if filters.query and text_narrows:
         stmt = stmt.where(
             or_(
                 SearchIndex.search_vector.op("@@")(tsquery),

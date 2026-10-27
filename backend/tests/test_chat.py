@@ -111,10 +111,16 @@ class TestAQuestionCanMatchTheIndex:
         Injecting `terms = question` back into `answer` broke nothing, because every
         test here called `record_query` directly. The helper being correct is no use if
         the caller stops using it.
+
+        The rewriter now runs on the *residue* - the question with the spans that became
+        structured filters blanked out - so a country or a duty figure is not also
+        demanded of the record label. Both halves are pinned: the question is parsed,
+        and what survives parsing is what gets rewritten.
         """
         source = inspect.getsource(chat.answer)
-        assert "record_query(question)" in source
-        assert "SearchFilters(query=terms)" in source
+        assert "question_filters.parse(question)" in source
+        assert "record_query(parsed.residue)" in source
+        assert "_search_question(db, parsed)" in source
 
     def test_the_question_becomes_an_or_query(self):
         terms = chat.record_query("Which Sulzer multistage pumps do we hold?")
@@ -176,10 +182,14 @@ class TestNewOnTheWebIsOnlyASuggestion:
 
 class TestFailuresDegradeRatherThanBlank:
     def test_a_web_search_failure_still_answers_from_records(self):
-        source = inspect.getsource(chat.answer)
-        assert "web_error" in source
+        """The search now runs in `_web_phase`, on its own thread, so the failure is
+        caught there and handed back as a value. The guarantee is unchanged: a web
+        search that fails must not take the record half down with it."""
+        assert "web_error" in inspect.getsource(chat.answer)
+        phase = inspect.getsource(chat._web_phase)
         # The except around the search must not re-raise.
-        assert "chat.web_search_failed" in source
+        assert "chat.web_search_failed" in phase
+        assert 'return [], f"Web search failed' in phase
 
     def test_a_missing_reading_model_says_so(self):
         source = inspect.getsource(chat.answer)
@@ -376,7 +386,7 @@ class TestCaptureReadsThePagesTheAnswerCited:
 
 
 class TestAnOpeningThatIsNotAQuestion:
-    """"Hi there" used to be searched for, and found a dictionary entry for itself.
+    """ "Hi there" used to be searched for, and found a dictionary entry for itself.
 
     `record_query` reduces it to nothing - "hi" is under three characters, "there" is a
     stopword - so no record matched, and the web provider was then handed the literal
@@ -422,7 +432,7 @@ class TestAnOpeningThatIsNotAQuestion:
         assert chat.record_query(question) != ""
 
     def test_a_message_with_nothing_searchable_asks_for_a_detail(self):
-        """"What do we have?" has no content word, so there is nothing to search for."""
+        """ "What do we have?" has no content word, so there is nothing to search for."""
         assert chat.record_query("what do we have?") == ""
         reply = chat.clarification_reply("what do we have?")
         assert "no vendor, model, standard or duty" in reply
@@ -481,21 +491,31 @@ class TestTheDomainGate:
         assert domain_signal(question) is False
 
     def test_a_matched_record_is_never_refused(self):
-        """"PWI-BB" is letters only, so the vocabulary misses it - the search does not.
+        """ "PWI-BB" is letters only, so the vocabulary misses it - the search does not.
 
         This is the case that justifies the ordering. The gate is consulted only when
         `hits` is empty, and a real model code is exactly what fills `hits`.
         """
         assert domain_signal("PWI-BB") is False
         source = inspect.getsource(chat.answer)
-        assert "if not hits and not domain_signal(question):" in source
-        # ...and it is reached only after the search has run.
-        assert source.index("search.search_pump_models") < source.index("domain_signal(")
+        assert "looks_like_pumps = domain_signal(question)" in source
+        assert "if not hits and not looks_like_pumps:" in source
+        # ...and the *refusal* is reached only after the search has run. `domain_signal`
+        # itself is now evaluated earlier - it is a pure function over the question text,
+        # and the web half needs its verdict to decide whether to start at all - but the
+        # gate that refuses still reads `hits`, so it cannot fire before the search.
+        assert source.index("_search_question(db, parsed)") < source.index(
+            "if not hits and not looks_like_pumps:"
+        )
 
     def test_a_refusal_searches_nothing(self):
         """Refusing after a web search would defeat the point of refusing."""
         source = inspect.getsource(chat.answer)
-        assert source.index("domain_signal(") < source.index("if use_web:")
+        # The web half starts early now, to run alongside the record half - but only
+        # once `domain_signal` has said the question looks like a pump question, so a
+        # refusal still spends no search.
+        assert source.index("domain_signal(") < source.index("pool.submit(_web_phase")
+        assert "if client is not None and looks_like_pumps:" in source
 
     def test_the_refusal_says_what_it_does_answer(self):
         reply = chat.off_domain_reply()
@@ -505,22 +525,20 @@ class TestTheDomainGate:
 
 
 class TestAskingAfterTheAssistant:
-    """"How are you" is a question about the assistant, not a hello.
+    """ "How are you" is a question about the assistant, not a hello.
 
     It was in the greeting set and so was answered "Hello. I answer questions about..."
     - which ignores what was actually asked. It has its own reply now.
     """
 
-    @pytest.mark.parametrize(
-        "question", ["how are you", "How are you?", "hows it going", "you ok"]
-    )
+    @pytest.mark.parametrize("question", ["how are you", "How are you?", "hows it going", "you ok"])
     def test_it_is_answered_on_its_own_terms(self, question):
         reply = chat.conversational_reply(question)
         assert reply is not None
         assert not reply.startswith("Hello.")
 
     def test_a_form_of_address_does_not_swallow_the_phrase(self):
-        """"are you there" ends in an address term, and stripping it leaves nothing.
+        """ "are you there" ends in an address term, and stripping it leaves nothing.
 
         Both forms are matched - as written, and with the address dropped - so "hi
         there" still reduces to "hi" while "are you there" keeps its meaning.
@@ -532,3 +550,182 @@ class TestAskingAfterTheAssistant:
     def test_a_question_that_ends_in_one_is_left_alone(self):
         assert chat.conversational_reply("is there an API 610 BB3 pump") is None
         assert chat.conversational_reply("list all Sulzer pumps") is None
+
+
+class TestOneCatalogueOneAnswer:
+    """The chat answers from the shared master catalogue, the same for every caller.
+
+    PumpAtlas is sold as a master catalogue other applications query with a key, and an
+    API whose answer depends on who asks reads as broken to whoever is integrating it.
+    The same question through a bearer token and through an API key returned three
+    approved Singapore suppliers and none - the token was platform staff reading all 166
+    records, the key a tenant reading the 45 shared ones. Both were right about what the
+    caller could see, which is the problem when the product promises one catalogue.
+    """
+
+    def test_the_chat_asks_the_shared_catalogue_alone(self):
+        source = inspect.getsource(chat.answer)
+        assert "settings.CHAT_SHARED_MASTER_ONLY" in source
+        assert "parsed.filters.only_shared_master = True" in source
+
+    def test_it_narrows_rather_than_widens(self):
+        """`only_shared_master` adds a predicate inside row level security, so it can
+        only return fewer rows than the caller is already entitled to. A tenant's
+        private records are excluded for that tenant too, not merely hidden from the
+        others - which is why this cannot leak one client's data to another."""
+        from app.services.search import apply_filters
+
+        body = inspect.getsource(apply_filters)
+        assert "if filters.only_shared_master:" in body
+        assert "SearchIndex.is_shared_master.is_(True)" in body
+
+    def test_the_policy_is_a_setting_not_a_rewrite(self):
+        """Reversible: this is a product decision, and the cost - a client's own records
+        no longer appearing in its own chat answers - may not stay acceptable."""
+        from app.core.config import Settings
+
+        assert "CHAT_SHARED_MASTER_ONLY" in Settings.model_fields
+
+
+class TestOnlyWhatWasReadCanBeCited:
+    """A link the provider never read is not a source.
+
+    Measured against the live OpenAI search provider: asked which Singapore suppliers
+    were held, it returned five Google Maps *search* URLs with zero characters of page
+    text between them - and two identical calls thirty seconds apart shared only one of
+    the five. Each was handed to the model as a numbered block with a title, an URL and
+    an empty excerpt, which reads exactly like a citable source. The model cited all
+    five. Someone following [W3] reaches a map query, and the answer looked sourced.
+    """
+
+    class _Result:
+        def __init__(self, excerpt: str) -> None:
+            self.url = "https://example.com/pump"
+            self.title = "A page"
+            self.combined_excerpt = excerpt
+
+    def test_a_bare_link_is_read_before_it_is_discarded(self):
+        """Measured on this database: OpenAI and Anthropic both return five results
+        with zero characters of page text, so every web source was correctly refused
+        and the web half of every answer was empty. Only Parallel returns text, and it
+        bills per search. PumpAtlas already fetches provider-supplied URLs in capture,
+        so the chat reads them itself rather than depending on the provider."""
+        phase = inspect.getsource(chat._web_phase)
+        assert "settings.CHAT_READ_LINKED_PAGES" in phase
+        assert "_read_linked_pages(results)" in phase
+        # ...and it happens before anything decides which results are citable, or it
+        # changes nothing: the split runs on what `_web_phase` hands back.
+        answer = inspect.getsource(chat.answer)
+        assert answer.index("web_future.result()") < answer.index(
+            "unread = [r for r in web_results if not _readable(r)]"
+        )
+
+    def test_the_two_halves_run_together(self):
+        """Measured on one answer: the provider took 6.7s and reading its pages 5.6s,
+        while the record search and its spec queries took 2.4s waiting their turn. The
+        web half touches no database, so it runs on a thread while the record half
+        queries and costs nothing in wall time."""
+        source = inspect.getsource(chat.answer)
+        assert "pool.submit(_web_phase, client, question)" in source
+        assert source.index("pool.submit(_web_phase") < source.index("_search_question(db, parsed)")
+
+    def test_the_web_half_touches_no_database(self):
+        """A SQLAlchemy Session is not thread-safe; HTTP is. That is the whole reason
+        this can be moved off the main thread."""
+        assert "db" not in inspect.signature(chat._web_phase).parameters
+        # No database call of any kind in the body - checked against the code, not the
+        # comments, which mention a Session precisely to say there is not one.
+        body = ast.parse(inspect.getsource(chat._web_phase))
+        called = {
+            node.func.attr
+            for node in ast.walk(body)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert not called & {"execute", "scalars", "scalar", "query", "get", "commit"}
+
+    def test_starting_early_does_not_defeat_the_domain_gate(self):
+        """The gate refuses "what is the weather in Doha" precisely so a web search is
+        not spent on it. Launching before the gate would undo that, so the search only
+        starts once the question already looks like a pump question."""
+        source = inspect.getsource(chat.answer)
+        assert "if client is not None and looks_like_pumps:" in source
+        assert source.index("looks_like_pumps = domain_signal(question)") < source.index(
+            "pool.submit(_web_phase"
+        )
+
+    def test_page_reading_has_a_wall_clock_ceiling(self):
+        """`WEB_READ_TIMEOUT_SECONDS` is httpx's read timeout and restarts on every
+        chunk, so a server that trickles bytes holds the connection past it. The caller
+        is waiting, so the phase gets a budget it cannot exceed whatever the far end
+        does."""
+        body = inspect.getsource(chat._read_linked_pages)
+        assert "timeout=WEB_READ_BUDGET_SECONDS" in body
+        assert "pool.shutdown(wait=False" in body
+        assert chat.WEB_READ_BUDGET_SECONDS <= 10
+
+    def test_reading_a_page_respects_robots_and_a_short_timeout(self):
+        """The caller is waiting, and the page belongs to someone else."""
+        body = inspect.getsource(chat._read_linked_page)
+        assert "ingestion.robots_allows(url)" in body
+        assert "timeout=WEB_READ_TIMEOUT_SECONDS" in body
+        assert chat.WEB_READ_TIMEOUT_SECONDS <= 15
+
+    def test_reading_a_page_writes_nothing(self):
+        """Capture reads a page to record a field and writes; this reads a page to
+        quote it and must not. The separation is the whole basis of the evidence rule."""
+        body = inspect.getsource(chat._read_linked_page)
+        assert "capture_url" not in body
+        assert "db" not in inspect.signature(chat._read_linked_page).parameters
+
+    def test_a_page_that_will_not_load_stays_a_bare_link(self):
+        """It was already a bare link, so a failure costs the answer nothing."""
+        body = inspect.getsource(chat._read_linked_page)
+        assert "except Exception" in body and "return False" in body
+
+    def test_an_empty_web_half_is_never_silent(self):
+        """An empty `web` array with no error is indistinguishable from a web search
+        that never ran, and the caller cannot tell which they got.
+
+        It happens for a real reason: the active provider has no result list. Its own
+        module says the pages come back as `url_citation` annotations, so the citations
+        *are* the results - and a model that answers a broad question from memory cites
+        nothing and the search returns zero, with no error. The same question through
+        the same credential does this intermittently, which is how it came to look like
+        an authentication difference.
+        """
+        source = inspect.getsource(chat.answer)
+        assert "if use_web and not web_results and not unread and web_error is None:" in source
+        assert "The web search returned no usable sources" in source
+
+    def test_the_objective_asks_for_sources(self):
+        """Asking for manufacturer pages makes citing the obvious way to answer, which
+        is the only lever on a provider whose results are its citations."""
+        phase = inspect.getsource(chat._web_phase)
+        assert "Cite the manufacturer, distributor or datasheet pages used." in phase
+
+    def test_a_result_with_no_page_text_is_not_readable(self):
+        assert chat._readable(self._Result("")) is False
+        assert chat._readable(self._Result("   \n ")) is False
+
+    def test_a_short_excerpt_is_still_evidence(self):
+        """Not a quality judgement: a brief quote supports a claim perfectly well."""
+        assert chat._readable(self._Result("Rated 200 m3/h at 150 m.")) is True
+
+    def test_unreadable_results_are_split_off_before_the_model_sees_them(self):
+        source = inspect.getsource(chat.answer)
+        assert "unread = [r for r in web_results if not _readable(r)]" in source
+        assert "web_results = [r for r in web_results if _readable(r)]" in source
+        # ...and the split happens before the context is built, or it achieves nothing.
+        assert source.index("_readable(r)") < source.index("_web_context(web_results)")
+
+    def test_dropping_them_is_reported_rather_than_silent(self):
+        """Returning fewer sources without saying why is its own kind of misleading."""
+        source = inspect.getsource(chat.answer)
+        assert "if unread:" in source
+        assert "could not " in source and "read" in source
+
+    def test_capture_still_considers_them(self):
+        """Being unreadable disqualifies a link from supporting a claim, not from being
+        a lead: capture fetches the page itself and quotes what it fetched."""
+        source = inspect.getsource(chat.answer)
+        assert "candidates = [*web_results, *unread]" in source

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from kombu.exceptions import OperationalError as KombuOperationalError
 from prometheus_client import Counter, Histogram
@@ -75,6 +76,56 @@ def _reap_interrupted_discovery() -> None:
         log.warning("startup.reap_failed", error=str(exc)[:200])
 
 
+def _warn_on_schema_drift() -> None:
+    """Say at boot which mapped tables the database does not have.
+
+    An unapplied migration does not announce itself, and every layer above it handles
+    the absence politely. `chat_conversations` and `chat_turns` were missing for weeks:
+    `/chat/conversations` returned 500, the sidebar rendered the same "no conversations
+    yet" it shows a new account, and `record_api_ask` caught its own exception so API
+    questions went unlogged too. Three best-effort handlers, and nothing anywhere that
+    said *the table is not there*. The schema was found by going looking.
+
+    So the server says it once, on the way up, where a restart puts it in front of
+    whoever is working. Best-effort: a database that cannot answer this is already
+    reported by `check_database`, and a failure here must not stop the API starting.
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.core.db import tenant_session
+        from app.models import Base
+
+        with tenant_session(None, is_platform_admin=True) as db:
+            present = set(
+                db.scalars(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                ).all()
+            )
+        missing = sorted(
+            table.name
+            for table in Base.metadata.sorted_tables
+            if table.name not in present
+        )
+        if not missing:
+            return
+        log.error(
+            "startup.schema_drift",
+            missing_tables=missing,
+            detail=(
+                f"{len(missing)} mapped table(s) do not exist, so the features that "
+                "use them fail quietly. Apply the matching file from db/migrations/ as "
+                "the schema owner, then re-check with "
+                "`python -m scripts.check_schema_drift`."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - a check must not stop the API starting
+        log.warning("startup.schema_check_failed", error=str(exc)[:200])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info(
@@ -101,6 +152,7 @@ async def lifespan(app: FastAPI):
         # /ready reports it and the orchestrator can hold traffic back.
         log.error("startup.database_unreachable", url_host=settings.POSTGRES_HOST)
     else:
+        _warn_on_schema_drift()
         _reap_interrupted_discovery()
     yield
     log.info("shutdown")
@@ -116,6 +168,42 @@ app = FastAPI(
     redoc_url="/redoc",
     contact={"name": "Targeticon", "url": "https://targeticon.com"},
 )
+
+def custom_openapi() -> dict:
+    """Advertise the API key as a credential, not as a stray header.
+
+    The generated schema only ever declared `HTTPBearer`, so Swagger's Authorize dialog
+    offered a bearer token - the browser session's own credential - and `X-API-Key`
+    appeared as an unexplained header parameter on every operation. An integrator
+    reading that page concludes they need a JWT. They do not: a key alone authenticates,
+    and the tenant it belongs to is what scopes the answer.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    schema["components"]["securitySchemes"]["ApiKeyHeader"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": (
+            "A key issued to one client. It carries that client's tenant for its whole "
+            "life, so no X-Tenant-Id header is needed - send it only as platform staff "
+            "narrowing yourself to one client's view."
+        ),
+    }
+    # Either credential opens the door; neither requires the other.
+    schema["security"] = [{"ApiKeyHeader": []}, {"HTTPBearer": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 app.add_middleware(
     CORSMiddleware,

@@ -421,6 +421,25 @@ CREATE TABLE api_keys (
 	CONSTRAINT fk_api_keys_created_by_user_id FOREIGN KEY(created_by_user_id) REFERENCES users (id) ON DELETE SET NULL
 );
 
+CREATE TABLE chat_conversations (
+	user_id UUID, 
+	api_key_id UUID, 
+	source VARCHAR(16) DEFAULT 'app' NOT NULL, 
+	source_label VARCHAR(160), 
+	title VARCHAR(120) NOT NULL, 
+	id UUID DEFAULT gen_random_uuid() NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	tenant_id UUID, 
+	CONSTRAINT pk_chat_conversations PRIMARY KEY (id), 
+	CONSTRAINT fk_chat_conversations_user_id FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_chat_conversations_api_key_id FOREIGN KEY(api_key_id) REFERENCES api_keys (id) ON DELETE SET NULL, 
+	CONSTRAINT fk_chat_conversations_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE
+);
+
+COMMENT ON COLUMN chat_conversations.source IS 'app | api_key';
+COMMENT ON COLUMN chat_conversations.source_label IS 'The API key''s name, kept so a thread outlives its key';
+
 CREATE TABLE import_batches (
 	name VARCHAR(255) NOT NULL, 
 	import_mode VARCHAR(40) NOT NULL, 
@@ -594,6 +613,25 @@ COMMENT ON COLUMN audit_logs.entity_label IS 'Human-readable subject, kept even 
 COMMENT ON COLUMN audit_logs.actor_type IS 'user | system | worker | api_key';
 COMMENT ON COLUMN audit_logs.changes IS '{"field": {"from": "...", "to": "..."}} - the diff that was applied';
 COMMENT ON COLUMN audit_logs.context IS 'Route, job id, batch id, reason';
+
+CREATE TABLE chat_turns (
+	conversation_id UUID NOT NULL, 
+	position INTEGER NOT NULL, 
+	question TEXT NOT NULL, 
+	answer JSONB, 
+	failed TEXT, 
+	id UUID DEFAULT gen_random_uuid() NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	tenant_id UUID, 
+	CONSTRAINT pk_chat_turns PRIMARY KEY (id), 
+	CONSTRAINT uq_chat_turns_conversation_id_position UNIQUE (conversation_id, position), 
+	CONSTRAINT fk_chat_turns_conversation_id FOREIGN KEY(conversation_id) REFERENCES chat_conversations (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_chat_turns_tenant_id FOREIGN KEY(tenant_id) REFERENCES tenants (id) ON DELETE CASCADE
+);
+
+COMMENT ON COLUMN chat_turns.answer IS 'The answer exactly as /chat/ask returned it, citations included';
+COMMENT ON COLUMN chat_turns.failed IS 'Set when the question failed, so a reopened thread says so';
 
 CREATE TABLE comparisons (
 	name VARCHAR(255) NOT NULL, 
@@ -2024,6 +2062,9 @@ CREATE INDEX ix_users_tenant_active ON users (tenant_id, is_active);
 CREATE INDEX ix_users_tenant_id ON users (tenant_id);
 CREATE INDEX ix_api_keys_prefix ON api_keys (prefix);
 CREATE INDEX ix_api_keys_tenant_id ON api_keys (tenant_id);
+CREATE INDEX ix_chat_conversations_tenant_id ON chat_conversations (tenant_id);
+CREATE INDEX ix_chat_conversations_user_updated ON chat_conversations (user_id, updated_at);
+CREATE INDEX ix_chat_conversations_tenant_updated ON chat_conversations (tenant_id, updated_at);
 CREATE INDEX ix_import_batches_tenant_id ON import_batches (tenant_id);
 CREATE INDEX ix_import_batches_tenant_status ON import_batches (tenant_id, status);
 CREATE INDEX ix_requirement_profiles_tenant ON requirement_profiles (tenant_id, is_active);
@@ -2038,6 +2079,8 @@ CREATE INDEX ix_audit_logs_occurred_at ON audit_logs (occurred_at);
 CREATE INDEX ix_audit_logs_request_id ON audit_logs (request_id);
 CREATE INDEX ix_audit_logs_tenant_id ON audit_logs (tenant_id);
 CREATE INDEX ix_audit_logs_tenant_time ON audit_logs (tenant_id, occurred_at);
+CREATE INDEX ix_chat_turns_conversation_id ON chat_turns (conversation_id);
+CREATE INDEX ix_chat_turns_tenant_id ON chat_turns (tenant_id);
 CREATE INDEX ix_comparisons_tenant_created ON comparisons (tenant_id, created_at);
 CREATE INDEX ix_comparisons_tenant_id ON comparisons (tenant_id);
 CREATE INDEX ix_confidence_scores_entity ON confidence_scores (entity_type, entity_id);

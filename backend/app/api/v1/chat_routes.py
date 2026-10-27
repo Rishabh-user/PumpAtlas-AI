@@ -3,7 +3,8 @@
 Two routes, and the split between them is the point:
 
 * ``/chat/ask`` reads. It searches what is held, searches the web, and has the active
-  reading model compose an answer citing both. It writes nothing.
+  reading model compose an answer citing both. It writes no record; for an API key it
+  logs the transcript against the key's tenant (see ``services/chat_log``).
 * ``/chat/capture`` writes - by starting an ordinary discovery run. The chat does not
   store anything itself, because a model's prose is not evidence: a stored field has to
   carry a verbatim quote from a page PumpAtlas fetched, and that is what capture does.
@@ -22,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core import rate_limit
 from app.core.deps import CurrentPrincipal, DbSession, require
 from app.core.logging import get_logger
-from app.services import chat, discovery, dispatch, pump_discovery, vendor_discovery
+from app.services import chat, chat_log, discovery, dispatch, pump_discovery, vendor_discovery
 from app.workers import tasks
 
 log = get_logger(__name__)
@@ -132,6 +133,10 @@ def ask(payload: AskRequest, principal: CurrentPrincipal, db: DbSession) -> dict
         new=len(result.get("new_on_web") or []),
         answered=bool(result.get("answer")),
     )
+    # A question another application asked with an API key is logged against the key's
+    # tenant, so the history shows which tenant searched what. It stores the transcript
+    # only - never a record - and cannot fail the answer.
+    chat_log.record_api_ask(db, principal, payload.question.strip(), result)
     return result
 
 

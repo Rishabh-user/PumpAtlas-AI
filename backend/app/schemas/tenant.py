@@ -35,8 +35,16 @@ class TenantOut(ORMModel):
 
 class TenantStats(TenantOut):
     user_count: int = 0
+    #: What this client owns. `visible_*` is what it can query, which includes the
+    #: shared master catalogue where the entitlement allows. A new customer owns
+    #: nothing and can still query the whole shared catalogue on day one, so owning
+    #: alone makes a live account look dead.
     vendor_count: int = 0
     pump_model_count: int = 0
+    visible_vendor_count: int = 0
+    visible_pump_model_count: int = 0
+    shared_vendor_count: int = 0
+    shared_pump_model_count: int = 0
     source_count: int = 0
     ai_jobs_last_30d: int = 0
     storage_used_mb: float = 0.0

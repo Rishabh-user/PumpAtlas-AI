@@ -12,6 +12,7 @@ from app.models.ai import (
 from app.models.ai_settings import AiProviderConfig
 from app.models.audit import AuditLog, RecordVersion
 from app.models.base import Base
+from app.models.chat import ChatConversation, ChatTurn
 from app.models.comparison import (
     Comparison,
     ComparisonItem,
@@ -51,6 +52,8 @@ __all__ = [
     "ApiKey",
     "AuditLog",
     "Base",
+    "ChatConversation",
+    "ChatTurn",
     "CommercialSpec",
     "Comparison",
     "ComparisonItem",

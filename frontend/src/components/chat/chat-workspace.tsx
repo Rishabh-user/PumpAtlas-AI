@@ -22,10 +22,13 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { clientFetch } from "@/lib/api-client";
 import {
+  appendTurn,
   type Conversation,
+  createConversation,
+  deleteConversation,
+  loadConversation,
   loadConversations,
   newConversationId,
-  saveConversations,
   titleFor,
   upsert,
 } from "@/lib/chat-history";
@@ -76,7 +79,9 @@ const FALLBACK_EXAMPLES: ChatExample[] = [
  *
  * - **Asking writes nothing.** Reading a page into a record is the discovery
  *   pipeline, and it lives on Pumps and Vendors — not inside an answer.
- * - **The transcript stays in the browser.** See `lib/chat-history` for why.
+ * - **The transcript is not evidence.** It is stored per user so it survives a reload
+ *   and follows a person between machines, but nothing stored is read back into the
+ *   record. See `lib/chat-history`.
  *
  * One thing is not carried over: the question is sent on its own, with no prior
  * turns attached, so an answer never depends on a transcript this platform did
@@ -88,6 +93,18 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [historyUnavailable, setHistoryUnavailable] = useState(false);
+
+  // A thread starts under a throwaway local id and gets the server's once its first
+  // turn is written. The local id stays the React key for the life of the page, so
+  // nothing that closed over it goes stale; this maps it to the real one.
+  const conversationsRef = useRef<Conversation[]>([]);
+  const serverIds = useRef(new Map<string, string>());
+  // The write for the most recent turn, so the next question waits for it rather than
+  // racing it to create the same thread twice.
+  const pendingSave = useRef<Promise<void>>(Promise.resolve());
 
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -121,41 +138,40 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
   // usable screen rather than an empty one.
   const examples = context?.examples?.length ? context.examples : FALLBACK_EXAMPLES;
 
-  // Read after mount, never during render: `localStorage` does not exist on the
-  // server, and reading it in the initialiser makes the first client render
-  // disagree with the server's and throws a hydration error.
+  // The history is fetched after mount: it needs the signed-in session, and a
+  // server render has no browser to ask from.
   useEffect(() => {
-    setConversations(loadConversations());
+    let cancelled = false;
+    void loadConversations().then((items) => {
+      if (items === null) {
+        // Unreachable, not empty. Saying so matters: the two look identical in the
+        // sidebar, and answers keep working either way, so nothing else gives it away.
+        if (!cancelled) setHistoryUnavailable(true);
+        return;
+      }
+      // Merge rather than replace: a question asked before this resolved is already
+      // on screen and is not in the list yet.
+      if (!cancelled) {
+        setConversations((current) => [
+          ...current,
+          ...items.filter((item) => !current.some((other) => other.id === item.id)),
+        ]);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const active = useMemo(
     () => conversations.find((item) => item.id === activeId) ?? null,
     [conversations, activeId],
   );
   const turns = useMemo(() => active?.turns ?? [], [active]);
-
-  /**
-   * Apply a change and persist it in one step.
-   *
-   * Storage is written here rather than in an effect keyed on the list. Such an
-   * effect has to tell "nothing has loaded yet" apart from "the user deleted the
-   * last conversation" — both are an empty array — and it gets that wrong on
-   * mount, where StrictMode runs effects twice and the second pass would save
-   * the empty initial state over what the first pass had just loaded.
-   *
-   * The updater is pure apart from this write, which is idempotent: the same
-   * list serialises to the same string however many times StrictMode calls it.
-   */
-  const commit = useCallback(
-    (update: (current: Conversation[]) => Conversation[]) => {
-      setConversations((current) => {
-        const next = update(current);
-        saveConversations(next);
-        return next;
-      });
-    },
-    [],
-  );
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -166,18 +182,29 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
       const trimmed = text.trim();
       if (trimmed.length < 3 || asking) return;
 
-      const id = conversationId ?? activeId ?? newConversationId();
+      await pendingSave.current;
+
+      // A thread another application asked is a record of what that tenant searched;
+      // a follow-up starts a thread of its own rather than writing into it.
+      const readOnly = conversationsRef.current.find((item) => item.id === activeId)?.source === "api_key";
+      const id = conversationId ?? (readOnly ? null : activeId) ?? newConversationId();
       setQuestion("");
       setAsking(true);
       setActiveId(id);
 
-      commit((current) => {
+      let title = titleFor(trimmed);
+      setConversations((current) => {
         const existing = current.find((item) => item.id === id);
+        title = existing?.title ?? title;
         return upsert(current, {
           id,
-          title: existing?.title ?? titleFor(trimmed),
+          title,
           updatedAt: Date.now(),
           turns: [...(existing?.turns ?? []), { question: trimmed, answer: null }],
+          tenant: existing?.tenant ?? null,
+          source: "app",
+          sourceLabel: null,
+          loaded: true,
         });
       });
 
@@ -192,7 +219,7 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
         failed = caught instanceof Error ? caught.message : "The question failed";
       }
 
-      commit((current) =>
+      setConversations((current) =>
         current.map((item) =>
           item.id === id
             ? {
@@ -206,9 +233,35 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
         ),
       );
       setAsking(false);
+
+      // Written after the answer is on screen, so saving never delays it. A failed
+      // save leaves the thread usable for this visit and says so.
+      const turn = { question: trimmed, answer, failed };
+      pendingSave.current = (async () => {
+        const known = serverIds.current.get(id) ?? (id.startsWith("new-") ? null : id);
+        if (known) {
+          setSaveFailed(!(await appendTurn(known, turn)));
+          return;
+        }
+        const created = await createConversation(title, turn);
+        if (created) serverIds.current.set(id, created);
+        setSaveFailed(created === null);
+      })();
     },
-    [activeId, asking, useWeb, commit],
+    [activeId, asking, useWeb],
   );
+
+  async function open(id: string) {
+    setActiveId(id);
+    const target = conversations.find((item) => item.id === id);
+    if (!target || target.loaded) return;
+    setOpening(id);
+    const full = await loadConversation(id);
+    setOpening((current) => (current === id ? null : current));
+    if (full) {
+      setConversations((current) => current.map((item) => (item.id === id ? full : item)));
+    }
+  }
 
   function startNew() {
     setActiveId(null);
@@ -216,9 +269,12 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
     inputRef.current?.focus();
   }
 
-  function remove(id: string) {
-    commit((current) => current.filter((item) => item.id !== id));
+  async function remove(id: string) {
+    setConversations((current) => current.filter((item) => item.id !== id));
     if (activeId === id) setActiveId(null);
+    await pendingSave.current;
+    const known = serverIds.current.get(id) ?? (id.startsWith("new-") ? null : id);
+    if (known) await deleteConversation(known);
   }
 
   return (
@@ -242,11 +298,11 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
                 key={conversation.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => setActiveId(conversation.id)}
+                onClick={() => void open(conversation.id)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    setActiveId(conversation.id);
+                    void open(conversation.id);
                   }
                 }}
                 className={cn(
@@ -257,13 +313,33 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
                 )}
               >
                 <MessageSquare className="size-3 flex-shrink-0" />
-                <span className="flex-1 truncate text-2xs">{conversation.title}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-2xs">{conversation.title}</span>
+                  {conversation.tenant ? (
+                    <span
+                      title={
+                        conversation.source === "api_key"
+                          ? `Asked through ${conversation.sourceLabel ?? "an API key"}`
+                          : `Asked by your account in ${conversation.tenant.name}`
+                      }
+                      className={cn(
+                        "mt-0.5 inline-flex max-w-full items-center gap-1 truncate rounded px-1 py-px text-[0.5625rem] font-medium",
+                        conversation.source === "api_key"
+                          ? "bg-primary/10 text-primary"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {conversation.tenant.name}
+                      {conversation.source === "api_key" ? " · API" : ""}
+                    </span>
+                  ) : null}
+                </span>
                 <button
                   type="button"
                   aria-label="Delete conversation"
                   onClick={(event) => {
                     event.stopPropagation();
-                    remove(conversation.id);
+                    void remove(conversation.id);
                   }}
                   className="opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
                 >
@@ -272,9 +348,18 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
               </div>
             ))}
           </div>
-          <p className="border-t border-border px-2.5 py-2 text-[0.625rem] leading-relaxed text-muted-foreground">
-            Conversations are kept in this browser. Asking writes nothing to the
-            record.
+          <p
+            className={`border-t border-border px-2.5 py-2 text-[0.625rem] leading-relaxed ${
+              historyUnavailable || saveFailed
+                ? "text-sev-medium"
+                : "text-muted-foreground"
+            }`}
+          >
+            {historyUnavailable
+              ? "Chat history is unavailable — the conversation store could not be reached, so nothing is being saved. Answers are unaffected."
+              : saveFailed
+                ? "The last question could not be saved to your history."
+                : "Your conversations are saved to your account. Asking writes nothing to the record."}
           </p>
         </aside>
       ) : null}
@@ -309,7 +394,14 @@ export function ChatWorkspace({ context }: { context: ChatContext | null }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl px-4 py-5">
-            {turns.length === 0 ? (
+            {opening !== null && opening === activeId ? (
+              <p className="flex items-center gap-2 py-6 text-2xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin text-primary" />
+                Opening conversation…
+              </p>
+            ) : null}
+
+            {turns.length === 0 && opening !== activeId ? (
               <div className="pt-8 text-center">
                 <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-primary/10">
                   <Sparkles className="size-5 text-primary" />

@@ -8,6 +8,7 @@ from app.api.v1 import (
     ai_settings_routes,
     audit,
     auth,
+    chat_history,
     chat_routes,
     comparisons,
     discovery_routes,
@@ -42,3 +43,4 @@ api_router.include_router(tags.router)
 api_router.include_router(admin_database.router)
 api_router.include_router(ai_settings_routes.router)
 api_router.include_router(chat_routes.router)
+api_router.include_router(chat_history.router)

@@ -48,6 +48,43 @@ class Settings(BaseSettings):
     #: a mismatch either way, so this cannot drift silently.
     VENDOR_STRUCTURE_READY: bool = False
 
+    #: Whether `/chat/ask` answers from the shared master catalogue alone, identically
+    #: for every caller - each tenant, each API key, and platform staff.
+    #:
+    #: PumpAtlas is sold as a master catalogue that other applications query with a key,
+    #: and an API whose answer depends on who is asking reads as broken to the people
+    #: integrating it. The same question through a bearer token and through an API key
+    #: returned three approved Singapore suppliers and none, because the bearer token
+    #: was platform staff reading all 166 records and the key was a tenant reading the
+    #: 45 shared ones. Both answers were right about what the caller could see, which is
+    #: precisely the problem when the product promises one catalogue.
+    #:
+    #: So the chat asks the shared catalogue and nothing else. Row level security is
+    #: untouched and still decides what each caller may read; this narrows *within* it,
+    #: and narrowing cannot leak - a tenant's private records are excluded for that
+    #: tenant too, not merely hidden from the others.
+    #:
+    #: The cost is real and deliberate: a client's own records stop appearing in chat
+    #: answers, including to that client. SP Energy's 65 models and 1,601 vendors remain
+    #: readable through `/search`, `/vendors` and `/pumps`, which stay tenant-scoped.
+    #: Set this False to go back to each caller seeing the shared catalogue plus its own.
+    CHAT_SHARED_MASTER_ONLY: bool = True
+
+    #: Whether the chat fetches the pages a search provider returned without text.
+    #:
+    #: Two of the three configured providers return citations only - OpenAI and
+    #: Anthropic both hand back a URL and a title and zero characters of page content,
+    #: measured on this database. A source with no text cannot support a claim, so the
+    #: answer correctly refuses to cite it, and the web half of every answer is empty.
+    #: Only Parallel returns page text, and it bills per search.
+    #:
+    #: PumpAtlas already fetches provider-supplied URLs in the capture pipeline, with
+    #: the same robots check, timeout and size ceiling. Doing it here turns a bare link
+    #: into a quotable source without depending on which search provider is active.
+    #: Nothing is stored: this reads a page to quote it, where capture reads a page to
+    #: record a field, and only capture writes.
+    CHAT_READ_LINKED_PAGES: bool = True
+
     #: Whether the per-caller ceilings in `app.core.rate_limit` are enforced. On by
     #: default: the endpoints they guard spend provider money per call.
     RATE_LIMIT_ENABLED: bool = True

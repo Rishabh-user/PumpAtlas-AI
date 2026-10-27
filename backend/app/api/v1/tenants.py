@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,15 +11,22 @@ from sqlalchemy import func, select
 
 from app.core.deps import CurrentPrincipal, DbSession, PlatformAdmin, require
 from app.core.rbac import permissions_for
-from app.core.security import hash_password
+from app.core.security import hash_password, new_api_key
 from app.models.ai import AiJob, DataQualityFlag
 from app.models.enums import AuditAction, UserRoleName
 from app.models.pump import PumpModel
 from app.models.source import Document, Source
 from app.models.tenant import Tenant, TenantPermission
-from app.models.user import Role, User
+from app.models.user import ApiKey, Role, User
 from app.models.vendor import Vendor
-from app.schemas.auth import UserCreate, UserOut, UserUpdate
+from app.schemas.auth import (
+    ApiKeyCreate,
+    ApiKeyCreated,
+    ApiKeyOut,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 from app.schemas.common import Message, Page
 from app.schemas.tenant import (
     TenantCreate,
@@ -33,7 +41,23 @@ from app.services import audit
 router = APIRouter(tags=["tenants"])
 
 
-@router.get("/tenants", response_model=Page[TenantOut])
+def _counts_by_tenant(db: DbSession, model, *conditions) -> dict:
+    """One grouped query for every tenant, rather than one query per row.
+
+    The list renders a users, vendors, pump-models and storage column for each client.
+    Asking `/tenants/{id}` per row would be four counts times however many customers
+    there are, against a database 300ms away - and the page would still be wrong while
+    it waited. Grouped, the whole table costs four queries whatever the customer count.
+    """
+    rows = db.execute(
+        select(model.tenant_id, func.count())
+        .where(model.tenant_id.is_not(None), *conditions)
+        .group_by(model.tenant_id)
+    ).all()
+    return {tenant_id: int(count) for tenant_id, count in rows}
+
+
+@router.get("/tenants", response_model=Page[TenantStats])
 def list_tenants(
     _: PlatformAdmin,
     db: DbSession,
@@ -50,7 +74,55 @@ def list_tenants(
         stmt = stmt.where(Tenant.name.ilike(f"%{q}%") | Tenant.slug.ilike(f"%{q}%"))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = db.scalars(stmt.order_by(Tenant.name).limit(limit).offset(offset)).all()
-    return Page[TenantOut](items=rows, total=int(total), limit=limit, offset=offset)
+
+    # The columns the page actually renders. Without these every usage cell showed an
+    # em dash, which reads as "nothing here" rather than "nobody asked".
+    users = _counts_by_tenant(db, User, User.deleted_at.is_(None))
+    vendors = _counts_by_tenant(db, Vendor, Vendor.deleted_at.is_(None))
+    models = _counts_by_tenant(db, PumpModel, PumpModel.deleted_at.is_(None))
+    storage = {
+        tenant_id: int(total_bytes or 0)
+        for tenant_id, total_bytes in db.execute(
+            select(Document.tenant_id, func.coalesce(func.sum(Document.size_bytes), 0))
+            .where(Document.tenant_id.is_not(None))
+            .group_by(Document.tenant_id)
+        ).all()
+    }
+
+    # The shared master catalogue: owned by nobody, readable by every tenant whose
+    # entitlement allows it. Counted once for the page, not once per tenant.
+    shared_vendors = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Vendor)
+            .where(Vendor.tenant_id.is_(None), Vendor.deleted_at.is_(None))
+        )
+        or 0
+    )
+    shared_models = int(
+        db.scalar(
+            select(func.count())
+            .select_from(PumpModel)
+            .where(PumpModel.tenant_id.is_(None), PumpModel.deleted_at.is_(None))
+        )
+        or 0
+    )
+
+    items = []
+    for tenant in rows:
+        stats = TenantStats.model_validate(tenant)
+        stats.user_count = users.get(tenant.id, 0)
+        stats.vendor_count = vendors.get(tenant.id, 0)
+        stats.pump_model_count = models.get(tenant.id, 0)
+        stats.shared_vendor_count = shared_vendors if tenant.can_use_shared_master else 0
+        stats.shared_pump_model_count = shared_models if tenant.can_use_shared_master else 0
+        stats.visible_vendor_count = stats.vendor_count + stats.shared_vendor_count
+        stats.visible_pump_model_count = (
+            stats.pump_model_count + stats.shared_pump_model_count
+        )
+        stats.storage_used_mb = round(storage.get(tenant.id, 0) / 1_048_576, 2)
+        items.append(stats)
+    return Page[TenantStats](items=items, total=int(total), limit=limit, offset=offset)
 
 
 @router.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -199,6 +271,111 @@ def suspend_tenant(tenant_id: uuid.UUID, principal: PlatformAdmin, db: DbSession
     return Message(
         detail=f"Tenant {tenant.name} suspended. Data is retained; users can no longer sign in."
     )
+
+
+@router.get("/tenants/{tenant_id}/api-keys", response_model=list[ApiKeyOut])
+def list_tenant_api_keys(
+    tenant_id: uuid.UUID, _: PlatformAdmin, db: DbSession
+) -> list[ApiKey]:
+    """The keys issued to one client.
+
+    `GET /auth/api-keys` lists the *caller's* keys, so platform staff see the ones
+    belonging to nobody and never a client's. Without this there is no way to answer
+    "what does this customer hold" short of a SQL prompt, which is how a key nobody
+    remembers issuing stays active.
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or tenant.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+    return list(
+        db.scalars(
+            select(ApiKey)
+            .where(ApiKey.tenant_id == tenant_id)
+            .order_by(ApiKey.created_at.desc())
+        ).all()
+    )
+
+
+@router.delete("/tenants/{tenant_id}/api-keys/{key_id}", response_model=Message)
+def revoke_tenant_api_key(
+    tenant_id: uuid.UUID, key_id: uuid.UUID, principal: PlatformAdmin, db: DbSession
+) -> Message:
+    """Revoke one of this client's keys. Deactivates rather than deletes, so the audit
+    trail of it having existed and been used survives."""
+    key = db.get(ApiKey, key_id)
+    if key is None or key.tenant_id != tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "API key not found")
+    key.is_active = False
+    audit.record_audit(
+        db,
+        action=AuditAction.PERMISSION_CHANGE,
+        principal=principal,
+        entity_type="api_keys",
+        entity_id=key.id,
+        entity_label=key.name,
+        summary="API key revoked",
+        tenant_id=tenant_id,
+    )
+    db.commit()
+    return Message(detail=f"Key {key.name} revoked. It will be refused immediately.")
+
+
+@router.post(
+    "/tenants/{tenant_id}/api-keys",
+    response_model=ApiKeyCreated,
+    status_code=status.HTTP_201_CREATED,
+)
+def issue_tenant_api_key(
+    tenant_id: uuid.UUID,
+    payload: ApiKeyCreate,
+    principal: PlatformAdmin,
+    db: DbSession,
+) -> ApiKeyCreated:
+    """Issue a machine credential **for this client**. The key is shown once.
+
+    `POST /auth/api-keys` binds a key to the *caller's* tenant, which is right for a
+    client administrator issuing their own and wrong for platform staff onboarding
+    somebody: a platform admin has no tenant, so it produces a key belonging to nobody
+    that reads only the shared master catalogue. One such key is already in this
+    database. Naming the tenant in the path removes the ambiguity.
+
+    The key carries the tenant for its whole life. Row level security does the rest -
+    a request authenticated with it sees that client's records plus whatever shared
+    master data their entitlement allows, and nothing else.
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None or tenant.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+
+    raw, hashed = new_api_key()
+    key = ApiKey(
+        tenant_id=tenant.id,
+        created_by_user_id=principal.user_id,
+        name=payload.name,
+        prefix=raw[:11],
+        hashed_key=hashed,
+        scopes=payload.scopes,
+        expires_at=(
+            datetime.now(UTC) + timedelta(days=payload.expires_in_days)
+            if payload.expires_in_days
+            else None
+        ),
+    )
+    db.add(key)
+    audit.record_audit(
+        db,
+        action=AuditAction.CREATE,
+        principal=principal,
+        entity_type="api_keys",
+        entity_id=key.id,
+        entity_label=key.name,
+        summary=f"API key issued to {tenant.name}",
+        tenant_id=tenant.id,
+        context={"scopes": payload.scopes, "expires_at": str(key.expires_at)},
+    )
+    db.commit()
+    db.refresh(key)
+    return ApiKeyCreated(**ApiKeyOut.model_validate(key).model_dump(), api_key=raw)
 
 
 @router.get("/tenants/{tenant_id}/permissions", response_model=list[TenantPermissionOut])

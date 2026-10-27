@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
@@ -71,6 +72,15 @@ def main() -> int:
     parser.add_argument(
         "--commit", action="store_true", help="apply the removals (otherwise dry run)"
     )
+    parser.add_argument(
+        "--hide-tenants",
+        action="store_true",
+        help=(
+            "also soft-delete the suspended test tenants so they leave the tenant list. "
+            "Separate from suspension on purpose: a real client under suspension is a "
+            "commercial state somebody needs to see, so suspending never hides."
+        ),
+    )
     args = parser.parse_args()
 
     with tenant_session(None, is_platform_admin=True) as db:
@@ -88,6 +98,13 @@ def main() -> int:
             for tenant in tenants.values()
             if TEST_TENANT_PATTERN.match(tenant.slug or "")
             and tenant.status is not TenantStatus.SUSPENDED
+        ]
+        # Already suspended by an earlier run, and still on the tenant list, because
+        # suspension is a state rather than a removal.
+        hideable = [
+            tenant
+            for tenant in tenants.values()
+            if TEST_TENANT_PATTERN.match(tenant.slug or "") and tenant.deleted_at is None
         ]
 
         if not vendors and not test_tenants:
@@ -188,6 +205,37 @@ def main() -> int:
             )
             if args.commit:
                 indexing.reindex_pump_model(db, row.pump_model_id)
+
+        hidden = 0
+        if args.hide_tenants:
+            for tenant in hideable:
+                users = db.scalars(select(User).where(User.tenant_id == tenant.id)).all()
+                verb = "hide" if args.commit else "would hide"
+                print(f"{verb}: tenant {tenant.slug}  [{len(users)} user(s) with it]")
+                if not args.commit:
+                    continue
+                # Soft, exactly as every other record leaves this platform: the row and
+                # its audit history stay, the lists stop showing it. A tenant that
+                # vanished outright would take the trail of it having existed with it.
+                now = datetime.now(UTC)
+                tenant.deleted_at = now
+                tenant.status = TenantStatus.SUSPENDED
+                for user in users:
+                    user.is_active = False
+                    user.deleted_at = now
+                audit.record_audit(
+                    db,
+                    action=AuditAction.TENANT_CHANGE,
+                    principal=None,
+                    entity_type="tenants",
+                    entity_id=tenant.id,
+                    entity_label=tenant.name,
+                    summary="Test tenant hidden from the tenant list (soft deleted)",
+                    tenant_id=tenant.id,
+                )
+                hidden += 1
+            if args.commit and hidden:
+                print(f"hid {hidden} test tenant(s) and deactivated their users")
 
         if args.commit:
             db.commit()

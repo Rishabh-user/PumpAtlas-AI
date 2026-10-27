@@ -390,6 +390,9 @@ export interface Tenant {
   id: string;
   slug: string;
   name: string;
+  legal_name?: string | null;
+  primary_contact_email?: string | null;
+  can_contribute_shared_master?: boolean;
   country: string | null;
   industry_segment: string | null;
   status: string;
@@ -399,6 +402,11 @@ export interface Tenant {
   user_count?: number;
   vendor_count?: number;
   pump_model_count?: number;
+  /** Owned plus the shared master catalogue, where the entitlement allows it. */
+  visible_vendor_count?: number;
+  visible_pump_model_count?: number;
+  shared_vendor_count?: number;
+  shared_pump_model_count?: number;
   storage_used_mb?: number;
   open_flag_count?: number;
 }
@@ -524,6 +532,14 @@ export interface ChatAnswer {
   /** The records the answer cites as [R1], [R2]… in order. */
   records: ChatRecordHit[];
   record_total: number;
+  /**
+   * How the question was read into structured filters, as "countries: singapore → SG".
+   * Shown rather than hidden: a misreading is the failure that matters here, and it is
+   * invisible in an answer that otherwise reads perfectly well.
+   */
+  understood?: string;
+  /** What the search had to give up in order to return anything, in plain words. */
+  search_notes?: string[];
   web: ChatWebSource[];
   web_error: string | null;
   /** Pages about vendors the database does not hold — offered for capture. */

@@ -2,15 +2,140 @@
 
 A full pass over PumpAtlas AI: code, database, security posture and operations. Findings
 are ordered by what they cost if left alone, each with the evidence behind it and what
-fixing it involves. Everything here was measured against the running system on
-2026-10-06, not inferred from the code.
+fixing it involves. Everything here was measured against the running system rather than
+inferred from the code.
 
-**Verdict.** The engineering is sound and unusually disciplined in the places that are
-hardest to retrofit — tenant isolation, provenance, and the write gate that refuses
-unevidenced values. The risks are not in the architecture. They are that the whole thing
-is unversioned, that a client's commercially sensitive documents sit unprotected in the
-working tree, and that most of the data now in the database arrived through an import
-path that bypasses the guarantees the rest of the system is built on.
+Three passes so far, newest first: **26 October** (read against the SOW and the
+multi-tenant product the code has become), **14 October**, and the original on
+**6 October**. Each section says what it re-measured, so a number in an older section is
+a record of what was true then, not a claim about today.
+
+**Verdict, as at 26 October.** The engineering is sound and unusually disciplined in the
+places that are hardest to retrofit — tenant isolation enforced by the database rather
+than by application code, field-level provenance, and a write gate that refuses an
+unevidenced value. Those are what make a multi-tenant product possible at all, and they
+are already there.
+
+The risks are not in the architecture. They are, in order: that SOW §9 asks for 80%
+completeness on commercial and delivery data that no web source publishes and the Client
+has not yet supplied; that a client's commercially sensitive documents remain in a git
+history that has already been pushed; and that two migrations have been waiting on owner
+credentials for three weeks, holding 1,426 contacts and 664 registration identifiers in
+a JSON blob and leaving 93 of 160 "pump models" as approved-suppliers lines wearing a
+product's clothes.
+
+The first of those is a conversation, not a sprint.
+
+---
+
+## Status — 26 October 2026
+
+A third pass, re-measured against the running system today. This one is read against two
+documents rather than one: the signed SOW, and the product the code has actually become.
+
+**They are not the same thing, and the code is following the product.** The SOW is a
+single-client deliverable for Shapoorji Pallonji Energy — pilot category pumps, two or
+three nominated packages, UAT, training, complete. What exists is a multi-tenant master
+database serving per-customer API keys, with SP Energy as tenant one. That is the right
+direction and the architecture supports it, but it raises a question the SOW does not
+answer, recorded under *Contract* below.
+
+### The product model holds, and the database is what enforces it
+
+Tested by connecting as each issued key would, rather than by reading the code:
+
+| Key | Reads |
+| --- | --- |
+| No tenant | **55** — the shared master catalogue only |
+| Demo Offshore Operator | **86** = 31 of its own + 55 shared |
+| SP Energy | **1,656** = 1,601 of its own + 55 shared |
+| Platform admin | 1,687 — everything |
+
+36 of 37 tables carry `FORCE ROW LEVEL SECURITY`; only `ai_provider_configs` does not,
+which is platform-level credential storage and correct as it stands. An API key resolves
+to `is_platform_admin=False`, so no key can bypass RLS whatever its scopes say. A
+customer key holding the four read scopes is refused `vendor:write`, `ingestion:write`,
+`tenant:write` and `ai_review:approve`.
+
+That is "one master database, per-customer access", enforced by PostgreSQL rather than by
+application code, and it is the part of this system least worth rebuilding.
+
+### The acceptance criterion that cannot be met on the current path
+
+> **SOW §9** — "Vendor database populated with the agreed minimum vendor count and **≥80%
+> field completeness for core technical, commercial and delivery fields** in the pilot
+> vendor set."
+
+Measured today across 160 live pump models:
+
+| Group | Models holding any data | |
+| --- | --- | --- |
+| Technical | 86 | 54% |
+| **Commercial** | **4** | **2%** |
+| **Delivery** | **7** | **4%** |
+
+Average model completeness is **2.1%**; vendors **24.0%**.
+
+More web collection will not move the second and third rows. Measured directly over ten
+enrichment runs: six of ten models gained technical specifications and **none** gained
+commercial, delivery, dimensional, operational or administrative data. A manufacturer
+publishes duty curves, materials and configuration. Nobody publishes a price, a lead
+time, a warranty or an on-time delivery record — those live in a quotation.
+
+The SOW already names the sources that would close it. §5.1 assigns *Client executed
+project records* (price paid, actual delivery) and *vendor self-declaration via
+questionnaire* to the Client. **Neither has been delivered.** Until one of them is, §9 is
+unreachable however much effort goes into collection.
+
+This is a dependency, not a defect, and it needs raising with the Client rather than
+engineered around. It is the most consequential item in this review.
+
+### Contract — whose database is this
+
+SP Energy's 1,601 supplier records, their GST and PAN registrations and their signed
+approved-suppliers list sit in a database whose shared-master catalogue other tenants
+read. The separation is correct today: their rows are tenant-scoped and the 55 shared
+records are distinct. But the SOW assigns ownership of *data sourcing* (§5.1) and says
+nothing about ownership of the *resulting database*. Worth settling before a second
+customer signs, not after.
+
+### Closed since 14 October
+
+| | |
+| --- | --- |
+| Verification protected nothing | 65 models were badged "verified" with **zero** protected fields: the endpoint set `verification_status` on the row while the guard reads `field_provenance.confidence_level`. `provenance.mark_verified` now records the confirmation where the guard looks, vendors gained the verify endpoint they never had, and both pages have the button. |
+| Vendor creation was broken outright | Migration 003's columns are mapped but absent from the database. `deferred=True` protects SELECT; an INSERT names every column, so creating any vendor failed — taking out the discovery Store button, `POST /vendors` and every sweep that found something. The six columns are declared only when `VENDOR_STRUCTURE_READY` is set, and `/ready` reports a mismatch in either direction. |
+| A serialiser loaded columns the database lacks | `audit.snapshot` read every column by name, killing `repair_vendor_data` on its first record. It now skips unloaded attributes. Fourth occurrence of this failure class, first on a write path. |
+| Empty scorecards scored zero | Commercial fit and delivery risk are unscorable on almost every record; scoring them 0.0/E read as "assessed and failed". They now abstain and the overall redistributes their weight — one record reads 67.0/C where it read 36.9/E. |
+| Duty data was invisible | The list asked for `rated_capacity_m3h` while 56 of 78 records hold `max_capacity_m3h`: a model sold in 45 sizes has an envelope, not a rated point. Capacity visible across the catalogue went 6 → 63, head 3 → 58. |
+| The manual form the UI advertised did not exist | Every empty panel said "submit the data through the manual form" and nothing ever called `PUT /pump-models/{id}/specs/{group}`. For five of six groups that was the only possible route in. |
+| `/compare` and `/review` | Removed at the Client's direction, with the scoring engine and requirement profiles kept — `score_pump_model` lives in `services/comparison.py` despite the name and powers every scorecard. |
+
+### Still open, verified today
+
+| Finding | Measured now |
+| --- | --- |
+| **C2** Client documents in git history | **Unchanged, and still the only finding that worsens with time.** Ignored and untracked, but present in every commit already pushed. |
+| **C3** Migrations 002 and 003 | **Still unapplied.** Owner credentials are not on this machine — the application role is `NOBYPASSRLS` with no DDL by design, which is correct and also means nobody here can apply them. |
+| **H1** Contacts trapped in JSON | `vendor_contacts` holds 1 row against 1,426 named contacts. Blocked on 002. |
+| 93 of 160 "pump models" are not pumps | 65 approved-suppliers lines, 15 resolver placeholders, 13 bare API 610 type codes. Blocked on 003, which adds the table they belong in. |
+| API keys never expire | All four active keys have `expires_at = NULL`. Expiry is enforced; nothing sets it. A key issued to a customer today works for good. |
+| A key with no owner | "Shapoorji vendor database" has no tenant. It leaks nothing — it reads the 55 shared records only — but a key nobody owns is a key nobody will think to revoke. |
+
+### What a product needs that an engagement did not
+
+Recorded here because the shift from deliverable to product changes what counts as
+missing. None of these are SOW items:
+
+* **Per-key usage accounting.** Rate limits are per process and held in memory: two
+  instances allow twice the stated rate and a restart forgets. Billing a customer needs
+  counters that survive both.
+* **Key lifecycle.** Issue, expire, rotate and revoke, with the customer visible on the
+  key. Today a key is a row and a CLI script.
+* **A tenant onboarding path.** Four tenants exist; two are suspended duplicates both
+  named "Rival EPC Contractor". Creating a customer is a manual insert.
+* **Redis and a worker.** Enrichment runs in the API process, so a restart kills
+  everything in flight; 226 vendors took six hours of a browser tab staying open.
 
 ---
 
@@ -72,9 +197,9 @@ Credit where it is due, because these are the parts that are expensive to add la
 | | Evidence |
 | --- | --- |
 | Tenant isolation | Row-level security **enabled and forced** on every tenant table, with policies — `vendors`, `pump_models`, `search_index`, `vendor_contacts`, `field_provenance`, `sources`, `audit_logs`, `users`, `api_keys`. The application connects as `pumpatlas_app`: not a superuser, and **does not bypass RLS**. Isolation cannot be undone by an application bug. |
-| Tests | 961 passing, 32 skipped (all requiring a live stack), in 21 seconds. Lint clean across `app`, `tests` and `scripts`; frontend lint, typecheck and build clean. |
+| Tests | 1,000 passing, 31 skipped (all requiring a live stack), in 26 seconds. Lint clean across `app`, `tests` and `scripts`; frontend lint, typecheck and build clean. |
 | Frontend | Compiles clean; the client/server boundary check passes across 98 files and 44 client modules. |
-| Traceability | 1,634 field-provenance rows, 184 record versions, 508 audit entries. Every AI-written value carries a verbatim quote or it is refused. |
+| Traceability | 13,059 field-provenance rows, 1,449 of them verified and so protected from AI overwrite, across 2,567 captured sources and 709 audit entries. Every AI-written value carries a verbatim quote or it is refused. |
 | Deduplication | **Zero** duplicate normalised names within any tenancy, across 1,684 vendors. |
 | Dependencies | 24 pinned versions, no floating ranges. |
 | Code hygiene | Zero `TODO`/`FIXME`/`HACK` markers in 30k lines of Python and 16.5k of TypeScript. |
@@ -280,8 +405,23 @@ These were raised in earlier sessions and I cannot confirm their state from here
 
 ## What I would do, in order
 
-Rewritten 14 October. Steps 1, 2 and 6 of the original list are done; what remains is
-almost entirely database work, and none of it is blocked on code.
+Revised 26 October. Steps 1, 2 and 6 of the original list are done. What remains divides
+into three kinds, and only one of them is engineering:
+
+* **A conversation with the Client** — step 0 below, and the largest item in this review.
+* **Database work needing the owner** — steps 2 to 4, which nobody on the development
+  machine can do, by design.
+* **Product work that the SOW never asked for** — steps 7 and 8, which exist because this
+  is becoming a product rather than a deliverable.
+
+0. **Raise the commercial and delivery data gap with SP Energy.** SOW §9 requires ≥80%
+   field completeness across technical, commercial and delivery. Commercial sits at 2%
+   and delivery at 4%, and no amount of web collection will move them: ten measured
+   enrichment runs returned none of price, lead time, warranty or on-time delivery,
+   because manufacturers do not publish them. §5.1 already assigns the sources that
+   would — executed project records and vendor questionnaires — to the Client, and
+   neither has arrived. Everything else on this list is cheaper than this conversation,
+   and none of it substitutes for it.
 
 1. **Purge the client documents from git history** — the one finding that gets worse with
    time, because the repository is already pushed. They are ignored and untracked now, so
@@ -339,8 +479,23 @@ almost entirely database work, and none of it is blocked on code.
    leave it empty and the endpoint stays off, which is the safe default.
 
 8. **Stand up Redis and a worker** (M1) when discovery stops being something a person
-   watches. Until then an API restart kills every run in flight.
+   watches. Until then an API restart kills every run in flight, and a 226-record
+   enrichment means six hours of a browser tab staying open.
+
+9. **Give customer API keys a lifecycle.** All four active keys have `expires_at = NULL`,
+   so a key issued to a customer works for good; expiry is enforced but nothing sets it.
+   Retire the "Shapoorji vendor database" key, which has no tenant — it reads only the
+   55 shared records, so it leaks nothing, but a key nobody owns is a key nobody will
+   think to revoke.
+
+10. **Add per-key usage accounting** before anyone is billed. The rate limits are held in
+    memory per process: two instances allow twice the stated rate and a restart forgets
+    everything. That is adequate for stopping a runaway client and useless as a meter.
+
+11. **Settle who owns the aggregated database.** The SOW assigns ownership of data
+    *sourcing* and is silent on the resulting database. Worth answering before a second
+    customer signs rather than after.
 
 Steps 2–4 are a few hours and close every finding that is currently costing something.
-Step 1 is the one that cannot be deferred, because it is the only one where waiting
-increases the damage.
+Step 1 is the one that cannot be deferred, because waiting increases the damage. Step 0
+is the one that decides whether the engagement can be accepted at all.

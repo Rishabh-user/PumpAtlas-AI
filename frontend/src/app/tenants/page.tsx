@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 
 import { EmptyState, ErrorState } from "@/components/data/states";
 import { AppShell } from "@/components/shell/app-shell";
+import { TenantApiKeys } from "@/components/tenants/api-keys";
+import { SuspendTenant, TenantForm } from "@/components/tenants/tenant-form";
 import { PageHeader } from "@/components/shell/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -71,6 +73,9 @@ export default async function TenantsPage() {
               <CardTitle>
                 {tenants.total.toLocaleString("en-GB")} tenants
               </CardTitle>
+              <div className="ml-auto">
+                <TenantForm />
+              </div>
             </CardHeader>
             {tenants.items.length === 0 ? (
               <EmptyState title="No tenants provisioned" />
@@ -83,9 +88,20 @@ export default async function TenantsPage() {
                     <TableHead>Status</TableHead>
                     <TableHead>Shared master</TableHead>
                     <TableHead className="text-right">Users</TableHead>
-                    <TableHead className="text-right">Vendors</TableHead>
-                    <TableHead className="text-right">Pump models</TableHead>
+                    <TableHead className="text-right">
+                      Vendors
+                      <span className="block text-[0.625rem] font-normal text-muted-foreground">
+                        own · can query
+                      </span>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      Pump models
+                      <span className="block text-[0.625rem] font-normal text-muted-foreground">
+                        own · can query
+                      </span>
+                    </TableHead>
                     <TableHead className="text-right">Storage</TableHead>
+                    <TableHead className="text-right">Manage</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -123,16 +139,40 @@ export default async function TenantsPage() {
                           / {tenant.max_users}
                         </span>
                       </TableCell>
+                      {/* Owned, then what the client can actually query. A new
+                        * customer owns nothing and can still reach the whole shared
+                        * catalogue, so showing ownership alone makes a live account
+                        * look like a dead one. */}
                       <TableCell className="figure text-right">
                         {num(tenant.vendor_count ?? null, { decimals: 0 })}
+                        <span className="text-muted-foreground">
+                          {" · "}
+                          {num(tenant.visible_vendor_count ?? null, { decimals: 0 })}
+                        </span>
                       </TableCell>
                       <TableCell className="figure text-right">
                         {num(tenant.pump_model_count ?? null, { decimals: 0 })}
+                        <span className="text-muted-foreground">
+                          {" · "}
+                          {num(tenant.visible_pump_model_count ?? null, {
+                            decimals: 0,
+                          })}
+                        </span>
                       </TableCell>
                       <TableCell className="figure text-right">
                         {tenant.storage_used_mb === undefined
                           ? "—"
                           : tenant.storage_used_mb.toFixed(1) + " MB"}
+                      </TableCell>
+                      <TableCell>
+                        {/* "Suspend", not "Delete": the endpoint behind it suspends
+                          * and keeps the data for the contract term, and a control
+                          * that says delete would promise what it does not do. */}
+                        <span className="flex items-center justify-end gap-2.5">
+                          <TenantApiKeys tenant={tenant} />
+                          <TenantForm tenant={tenant} />
+                          <SuspendTenant tenant={tenant} />
+                        </span>
                       </TableCell>
                     </TableRow>
                   ))}

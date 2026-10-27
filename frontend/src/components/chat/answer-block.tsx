@@ -74,6 +74,22 @@ export function AnswerBlock({
 
   return (
     <div className="min-w-0 space-y-2">
+      {/*
+        What the search had to give up, before the prose rather than after it. These
+        say things like "no held record states a flow rate, so that part of the
+        requirement was set aside" - which changes how the whole answer should be
+        read. Underneath it, the prose will sound just as confident either way.
+      */}
+      {answer.search_notes?.length ? (
+        <div className="space-y-1 rounded-md border border-sev-medium/40 bg-sev-medium/[0.06] p-2">
+          {answer.search_notes.map((note) => (
+            <p key={note} className="text-2xs leading-relaxed text-foreground">
+              {note}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
       <AnswerProse text={answer.answer ?? ""} onMarker={setOpenMarker} />
 
       {/*
@@ -99,6 +115,18 @@ export function AnswerBlock({
             <span>
               <span className="figure text-foreground">{answer.web.length}</span> web
               page{answer.web.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {/* How the question was read. The records were chosen by these filters, not
+              by the words of the question, so this is the one line that shows whether
+              the right question was answered. */}
+          {answer.understood ? (
+            <span
+              className="min-w-0 truncate"
+              title={`The records were selected by filtering on ${answer.understood}`}
+            >
+              read as{" "}
+              <span className="font-mono text-foreground">{answer.understood}</span>
             </span>
           ) : null}
         </div>
